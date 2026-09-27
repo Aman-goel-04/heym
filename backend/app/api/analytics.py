@@ -14,7 +14,6 @@ from app.db.models import (
     User,
     Workflow,
     WorkflowAnalyticsSnapshot,
-    WorkflowShare,
     WorkflowTeamShare,
 )
 from app.db.session import get_db
@@ -24,6 +23,7 @@ from app.models.schemas import (
     WorkflowBreakdownItem,
     WorkflowBreakdownResponse,
 )
+from app.services.workflow_access import explicit_workflow_share_ids
 
 router = APIRouter()
 
@@ -33,9 +33,7 @@ async def get_accessible_workflow_ids(db: AsyncSession, user_id: uuid.UUID) -> l
         select(Workflow.id).where(
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
+                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
                 Workflow.id.in_(
                     select(WorkflowTeamShare.workflow_id).where(
                         WorkflowTeamShare.team_id.in_(

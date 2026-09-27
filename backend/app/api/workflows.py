@@ -117,6 +117,7 @@ from app.services.hitl_service import (
 from app.services.html_response import build_html_response, find_sole_html_terminal
 from app.services.pending_execution import needs_local_pending_persist
 from app.services.workflow_access import (
+    explicit_workflow_share_ids,
     revoke_execution_tokens_without_access,
     user_has_workflow_access,
     workflow_access_clause,
@@ -866,9 +867,7 @@ async def get_recent_executions_for_user(
         .where(
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
+                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
             )
         )
         .order_by(ExecutionHistory.started_at.desc())

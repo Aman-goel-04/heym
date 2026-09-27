@@ -72,6 +72,7 @@ from app.services.pending_execution import (
     persist_pending_execution,
 )
 from app.services.secret_tokens import hash_secret
+from app.services.workflow_access import explicit_workflow_share_ids, workflow_access_clause
 
 router = APIRouter()
 T = TypeVar("T")
@@ -452,6 +453,7 @@ async def get_user_mcp_workflows(db: AsyncSession, user_id: uuid.UUID) -> list[W
         .join(WorkflowShare, WorkflowShare.workflow_id == Workflow.id)
         .where(
             WorkflowShare.user_id == user_id,
+            WorkflowShare.is_explicit_share.is_(True),
             WorkflowShare.mcp_enabled.is_(True),
             Workflow.kind != "dashboard_widget",
         )
@@ -471,9 +473,7 @@ async def get_all_user_workflows(db: AsyncSession, user_id: uuid.UUID) -> list[W
             Workflow.kind != "dashboard_widget",
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
+                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
             ),
         )
         .order_by(Workflow.name.asc())
@@ -729,7 +729,10 @@ async def get_mcp_config(
     workflows = await get_all_user_workflows(db, current_user.id)
 
     shares_result = await db.execute(
-        select(WorkflowShare).where(WorkflowShare.user_id == current_user.id)
+        select(WorkflowShare).where(
+            WorkflowShare.user_id == current_user.id,
+            WorkflowShare.is_explicit_share.is_(True),
+        )
     )
     shares_map = {s.workflow_id: s for s in shares_result.scalars().all()}
 
@@ -823,14 +826,7 @@ async def toggle_workflow_mcp(
     result = await db.execute(
         select(Workflow).where(
             Workflow.id == workflow_id,
-            or_(
-                Workflow.owner_id == current_user.id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(
-                        WorkflowShare.user_id == current_user.id
-                    )
-                ),
-            ),
+            workflow_access_clause(current_user.id),
         )
     )
     workflow = result.scalar_one_or_none()
@@ -847,10 +843,15 @@ async def toggle_workflow_mcp(
         await db.refresh(workflow)
         mcp_enabled = workflow.mcp_enabled
     else:
+        # Only a real, owner-granted share can carry the MCP toggle. A row that exists
+        # solely to remember a folder placement for a team-shared workflow must not be
+        # usable here: enabling MCP through it would let a revoked team member's leftover
+        # row keep executing the workflow after the team access it depended on is gone.
         share_result = await db.execute(
             select(WorkflowShare).where(
                 WorkflowShare.workflow_id == workflow_id,
                 WorkflowShare.user_id == current_user.id,
+                WorkflowShare.is_explicit_share.is_(True),
             )
         )
         share = share_result.scalar_one_or_none()

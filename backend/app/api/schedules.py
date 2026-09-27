@@ -7,10 +7,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.db.models import TeamMember, User, Workflow, WorkflowShare, WorkflowTeamShare
+from app.db.models import TeamMember, User, Workflow, WorkflowTeamShare
 from app.db.session import get_db
 from app.models.schemas import ScheduleEvent, ScheduleListResponse
 from app.services.timezone_utils import get_configured_timezone
+from app.services.workflow_access import explicit_workflow_share_ids
 
 router = APIRouter()
 
@@ -63,9 +64,7 @@ def _workflows_where_clause(current_user: User, include_shared: bool) -> Any:
     if include_shared:
         return or_(
             Workflow.owner_id == current_user.id,
-            Workflow.id.in_(
-                select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == current_user.id)
-            ),
+            Workflow.id.in_(explicit_workflow_share_ids(current_user.id)),
             Workflow.id.in_(
                 select(WorkflowTeamShare.workflow_id).where(
                     WorkflowTeamShare.team_id.in_(

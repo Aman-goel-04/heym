@@ -1540,12 +1540,13 @@ async def list_persisted_active_executions_for_user(
     """Return active execution rows for workflows accessible to the user."""
     from sqlalchemy import exists, or_, select
 
-    from app.db.models import ActiveWorkflowExecution, Workflow, WorkflowRunQueue, WorkflowShare
+    from app.db.models import ActiveWorkflowExecution, Workflow, WorkflowRunQueue
     from app.services.cluster.run_queue import (
         STATUS_CLAIMED,
         STATUS_QUEUED,
         STATUS_WAITING_FOR_MAIN,
     )
+    from app.services.workflow_access import explicit_workflow_share_ids
 
     # Keep queued runs visible during the handoff interval
     # (between dispatcher relinquishment and worker's first active-row write).
@@ -1566,9 +1567,7 @@ async def list_persisted_active_executions_for_user(
             ),
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
+                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
             ),
         )
         .order_by(WorkflowRunQueue.enqueued_at.desc())
@@ -1609,9 +1608,7 @@ async def list_persisted_active_executions_for_user(
             ActiveWorkflowExecution.cancel_requested_at.is_(None),
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
+                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
             ),
         )
         .order_by(ActiveWorkflowExecution.started_at.desc())
@@ -1663,13 +1660,13 @@ async def list_pending_review_executions_for_user(
         ExecutionHistory,
         HITLRequest,
         Workflow,
-        WorkflowShare,
     )
+    from app.services.workflow_access import explicit_workflow_share_ids
 
     now = _utcnow()
     accessible_workflow = or_(
         Workflow.owner_id == user_id,
-        Workflow.id.in_(select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)),
+        Workflow.id.in_(explicit_workflow_share_ids(user_id)),
     )
 
     hitl_stmt = (
