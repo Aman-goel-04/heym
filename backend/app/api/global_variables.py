@@ -250,15 +250,9 @@ async def get_global_variable(
         variable = shared_result.scalar_one_or_none()
     if variable is None:
         team_result = await db.execute(
-            select(GlobalVariable)
-            .join(
-                GlobalVariableTeamShare,
-                GlobalVariableTeamShare.global_variable_id == GlobalVariable.id,
-            )
-            .join(TeamMember, TeamMember.team_id == GlobalVariableTeamShare.team_id)
-            .where(
+            select(GlobalVariable).where(
                 GlobalVariable.id == variable_id,
-                TeamMember.user_id == current_user.id,
+                _team_shared_variable_clause(current_user.id),
             )
         )
         variable = team_result.scalar_one_or_none()
@@ -274,6 +268,21 @@ async def get_global_variable(
         value_type=variable.value_type,
         created_at=variable.created_at,
         updated_at=variable.updated_at,
+    )
+
+
+def _team_shared_variable_clause(user_id: uuid.UUID):
+    """WHERE clause for variables shared with any team the user belongs to.
+
+    IN subqueries rather than a join to ``TeamMember``, so a user who is in two teams that
+    both hold the share still matches a single row.
+    """
+    return GlobalVariable.id.in_(
+        select(GlobalVariableTeamShare.global_variable_id).where(
+            GlobalVariableTeamShare.team_id.in_(
+                select(TeamMember.team_id).where(TeamMember.user_id == user_id)
+            )
+        )
     )
 
 
@@ -304,15 +313,9 @@ async def _get_editable_variable(
         return variable
 
     team_result = await db.execute(
-        select(GlobalVariable)
-        .join(
-            GlobalVariableTeamShare,
-            GlobalVariableTeamShare.global_variable_id == GlobalVariable.id,
-        )
-        .join(TeamMember, TeamMember.team_id == GlobalVariableTeamShare.team_id)
-        .where(
+        select(GlobalVariable).where(
             GlobalVariable.id == variable_id,
-            TeamMember.user_id == user_id,
+            _team_shared_variable_clause(user_id),
         )
     )
     return team_result.scalar_one_or_none()

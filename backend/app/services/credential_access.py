@@ -6,6 +6,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Credential, CredentialShare, CredentialTeamShare, TeamMember
 
 
+def team_shared_credential_clause(user_id: UUID):
+    """WHERE clause for credentials shared with any team the user belongs to.
+
+    Uses IN subqueries rather than a join to ``TeamMember`` so a user who is in two teams that
+    both hold the share still matches a single row.
+    """
+    return Credential.id.in_(
+        select(CredentialTeamShare.credential_id).where(
+            CredentialTeamShare.team_id.in_(
+                select(TeamMember.team_id).where(TeamMember.user_id == user_id)
+            )
+        )
+    )
+
+
 async def get_accessible_credential(
     db: AsyncSession,
     credential_id: UUID,
@@ -35,12 +50,9 @@ async def get_accessible_credential(
         return credential
 
     team_result = await db.execute(
-        select(Credential)
-        .join(CredentialTeamShare, CredentialTeamShare.credential_id == Credential.id)
-        .join(TeamMember, TeamMember.team_id == CredentialTeamShare.team_id)
-        .where(
+        select(Credential).where(
             Credential.id == credential_id,
-            TeamMember.user_id == user_id,
+            team_shared_credential_clause(user_id),
         )
     )
     return team_result.scalar_one_or_none()

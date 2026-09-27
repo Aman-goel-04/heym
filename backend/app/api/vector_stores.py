@@ -9,7 +9,6 @@ from app.api.deps import get_current_user
 from app.db.models import (
     Credential,
     CredentialShare,
-    CredentialTeamShare,
     CredentialType,
     Team,
     TeamMember,
@@ -38,6 +37,7 @@ from app.models.schemas import (
     VectorStoreUploadResponse,
 )
 from app.services.audit_log import audit
+from app.services.credential_access import team_shared_credential_clause
 from app.services.encryption import decrypt_config
 from app.services.file_processor import create_file_processor
 from app.services.upload_limits import read_upload_file_limited
@@ -77,12 +77,9 @@ async def get_credential_config(
 
     if credential is None:
         team_result = await db.execute(
-            select(Credential)
-            .join(CredentialTeamShare, CredentialTeamShare.credential_id == Credential.id)
-            .join(TeamMember, TeamMember.team_id == CredentialTeamShare.team_id)
-            .where(
+            select(Credential).where(
                 Credential.id == credential_id,
-                TeamMember.user_id == user_id,
+                team_shared_credential_clause(user_id),
             )
         )
         credential = team_result.scalar_one_or_none()
@@ -1152,12 +1149,15 @@ async def _get_accessible_store(
 
     if store is None:
         team_result = await db.execute(
-            select(VectorStore)
-            .join(VectorStoreTeamShare, VectorStoreTeamShare.vector_store_id == VectorStore.id)
-            .join(TeamMember, TeamMember.team_id == VectorStoreTeamShare.team_id)
-            .where(
+            select(VectorStore).where(
                 VectorStore.id == vector_store_id,
-                TeamMember.user_id == user_id,
+                VectorStore.id.in_(
+                    select(VectorStoreTeamShare.vector_store_id).where(
+                        VectorStoreTeamShare.team_id.in_(
+                            select(TeamMember.team_id).where(TeamMember.user_id == user_id)
+                        )
+                    )
+                ),
             )
         )
         store = team_result.scalar_one_or_none()
