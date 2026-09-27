@@ -573,6 +573,10 @@ class WorkflowShare(Base):
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # False for a row that exists only to remember where a user filed a workflow they reach
+    # through a team share, not because the owner shared the workflow with them directly.
+    # Access checks must never treat such a row as a grant; it is cosmetic, folder-id bookkeeping.
+    is_explicit_share: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="shares")

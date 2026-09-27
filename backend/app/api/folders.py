@@ -72,7 +72,12 @@ def _write_folder_to_zip(
 def _accessible_workflow_filter(user_id: uuid.UUID):
     return or_(
         Workflow.owner_id == user_id,
-        Workflow.id.in_(select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)),
+        Workflow.id.in_(
+            select(WorkflowShare.workflow_id).where(
+                WorkflowShare.user_id == user_id,
+                WorkflowShare.is_explicit_share.is_(True),
+            )
+        ),
         Workflow.id.in_(
             select(WorkflowTeamShare.workflow_id).where(
                 WorkflowTeamShare.team_id.in_(
@@ -89,6 +94,15 @@ async def _set_shared_workflow_folder(
     user_id: uuid.UUID,
     folder_id: uuid.UUID | None,
 ) -> WorkflowShare:
+    """Remember which folder ``user_id`` filed this workflow into.
+
+    When no share row exists yet, the workflow is only reachable through a team
+    share, and this call must not grant standing access on its own. The new row
+    is marked ``is_explicit_share=False`` so it is pure folder-id bookkeeping:
+    access checks (``workflow_access_clause``, ``_accessible_workflow_filter``)
+    ignore it, and it is excluded from the workflow's share list. If the owner
+    later shares the workflow with this user directly, that flips to True.
+    """
     share_result = await db.execute(
         select(WorkflowShare).where(
             WorkflowShare.workflow_id == workflow_id,
@@ -97,7 +111,12 @@ async def _set_shared_workflow_folder(
     )
     share = share_result.scalar_one_or_none()
     if share is None:
-        share = WorkflowShare(workflow_id=workflow_id, user_id=user_id, folder_id=folder_id)
+        share = WorkflowShare(
+            workflow_id=workflow_id,
+            user_id=user_id,
+            folder_id=folder_id,
+            is_explicit_share=False,
+        )
         db.add(share)
     else:
         share.folder_id = folder_id

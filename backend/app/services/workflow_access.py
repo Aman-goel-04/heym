@@ -28,10 +28,19 @@ def workflow_access_clause(user_id: UUID) -> ColumnElement[bool]:
     belonging to a team the workflow is shared with. A dashboard widget's hidden
     workflow is also reachable with write access to its dashboard; read access
     to a dashboard never reaches a workflow.
+
+    A ``WorkflowShare`` row with ``is_explicit_share`` false is not a grant: it only
+    remembers which folder a user filed a team-shared workflow into and must never
+    substitute for the team share that actually gave them access.
     """
     return or_(
         Workflow.owner_id == user_id,
-        Workflow.id.in_(select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)),
+        Workflow.id.in_(
+            select(WorkflowShare.workflow_id).where(
+                WorkflowShare.user_id == user_id,
+                WorkflowShare.is_explicit_share.is_(True),
+            )
+        ),
         Workflow.id.in_(
             select(WorkflowTeamShare.workflow_id).where(
                 WorkflowTeamShare.team_id.in_(
