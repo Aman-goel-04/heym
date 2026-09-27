@@ -18,10 +18,11 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from "@/types/workflow";
-import type { WorkflowWithInputs } from "@/services/api";
+import type { AssistantStreamHandlers, WorkflowWithInputs } from "@/services/api";
 
 import Button from "@/components/ui/Button.vue";
 import ClarifyCard from "@/components/ui/ClarifyCard.vue";
+import CopyMessageButton from "@/components/ui/CopyMessageButton.vue";
 import Dialog from "@/components/ui/Dialog.vue";
 import ImageLightbox from "@/components/ui/ImageLightbox.vue";
 import JsonTree from "@/components/ui/JsonTree.vue";
@@ -34,6 +35,21 @@ import {
   stripClarifyBlock,
 } from "@/utils/parseClarify";
 import ExecutionTimeline from "@/components/Panels/ExecutionTimeline.vue";
+import YoloModeToggle from "@/features/assistant-yolo/components/YoloModeToggle.vue";
+import YoloStepList from "@/features/assistant-yolo/components/YoloStepList.vue";
+import YoloTestInputsCard from "@/features/assistant-yolo/components/YoloTestInputsCard.vue";
+import {
+  useAssistantYoloLoop,
+  type YoloMessageFields,
+} from "@/features/assistant-yolo/useAssistantYoloLoop";
+import {
+  applyYoloToolEnd,
+  applyYoloToolStart,
+  extractYoloDirective,
+  stripYoloBlock,
+  type YoloInputDraft,
+  type YoloInputState,
+} from "@/features/assistant-yolo/yoloProtocol";
 import type { TimelineEntry, TimelineSelectPayload } from "@/components/Panels/executionTimeline";
 import { buildExecutionLogForAssistant, formatExecutionLogToolCallTitle, isHitlWaitNodeResult, isRetryAttemptNodeResult } from "@/lib/executionLog";
 import { formatModelRoutingLabel, readSpanModelRouting } from "@/components/Panels/executionTimeline";
@@ -49,6 +65,7 @@ import { normalizeWorkflowEdges } from "@/lib/workflowEdges";
 import { aiApi, codexFollowupApi, credentialsApi, hitlApi, workflowApi } from "@/services/api";
 import { onDismissOverlays } from "@/composables/useOverlayBackHandler";
 import { useAiAssistantPanelFrame } from "@/composables/useAiAssistantPanelFrame";
+import { useAssistantInputResize } from "@/composables/useAssistantInputResize";
 import { useAiDefaults } from "@/composables/useAiDefaults";
 import { useWorkflowStore } from "@/stores/workflow";
 import { playSuccessSound } from "@/utils/audio";
@@ -1468,7 +1485,7 @@ function downloadGeneratedFile(file: SkillGeneratedFile): void {
   downloadDialogOpen.value = false;
 }
 
-interface ChatMessage {
+interface ChatMessage extends YoloMessageFields {
   id: string;
   role: "user" | "assistant";
   content: string;
@@ -1548,6 +1565,25 @@ const aiLoading = ref(false);
 const aiStreaming = ref(false);
 const aiAbortController = ref<AbortController | null>(null);
 const canvasMode = ref<"agent" | "ask">("agent");
+/** Off on every page load: YOLO runs are real, so the choice is not remembered. */
+const yoloMode = ref(false);
+const yoloLoop = useAssistantYoloLoop<ChatMessage>({
+  applyWorkflow: applyYoloWorkflow,
+  sendReport: (text, label) => {
+    void sendAiMessage(text, { report: { label } });
+  },
+  readInputs: readYoloInputs,
+  writeInputs: writeYoloInputs,
+  buildRequestBody: () => workflowStore.buildExecutionRequestBody(),
+  runWorkflow: (body) => workflowStore.executeWorkflow(body),
+  stopWorkflow: () => workflowStore.stopExecution(),
+  isExecuting: () => workflowStore.isExecuting,
+  saveConflictBlockedRun: () => workflowStore.staleSaveBlockedARun,
+  executionResult: () => workflowStore.executionResult,
+  nodeResults: () => workflowStore.nodeResults,
+  onVerified: playSuccessSound,
+});
+const yoloLoopActive = yoloLoop.isActive;
 
 const aiCredentials = ref<CredentialListItem[]>([]);
 /** Full credential list (owned + shared) for stripping shared IDs when applying AI-generated workflows */
@@ -1574,6 +1610,12 @@ const aiConversationId = ref(crypto.randomUUID());
 const aiInputMessage = ref("");
 const aiMessagesContainer = ref<HTMLDivElement | null>(null);
 const aiTextareaRef = ref<HTMLTextAreaElement | null>(null);
+const aiInputAreaRef = ref<HTMLElement | null>(null);
+const {
+  height: aiInputHeight,
+  resizing: aiInputResizing,
+  onHandlePointerDown: onAiInputResizePointerDown,
+} = useAssistantInputResize(aiTextareaRef, aiInputAreaRef, aiPanelRef);
 const availableWorkflows = ref<WorkflowWithInputs[]>([]);
 const speechRecognition = ref<SpeechRecognition | null>(null);
 const isSpeechSupported = ref(false);
@@ -1780,6 +1822,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  yoloLoop.abandon();
   unsubDismissOverlays?.();
   unsubDismissOverlays = null;
   window.removeEventListener("keydown", handleDebugPanelWindowKeyDown, true);
@@ -1931,7 +1974,25 @@ function extractWorkflowJson(content: string): { nodes: WorkflowNode[]; edges: W
   return null;
 }
 
-async function sendAiMessage(overrideText?: string): Promise<void> {
+interface SendAiMessageOptions {
+  /** Set when the YOLO loop sends a run report instead of the user typing. */
+  report?: { label: string };
+}
+
+interface StreamAssistantReplyOptions {
+  useYolo: boolean;
+  idSuffix?: string;
+}
+
+function lastAssistantMessage(): ChatMessage | null {
+  const last = aiMessages.value[aiMessages.value.length - 1];
+  return last?.role === "assistant" ? last : null;
+}
+
+async function sendAiMessage(
+  overrideText?: string,
+  options: SendAiMessageOptions = {},
+): Promise<void> {
   const message = (overrideText ?? aiInputMessage.value).trim();
   if (!message || !selectedCredentialId.value || !selectedModel.value) return;
   if (aiStreaming.value) return;
@@ -1941,93 +2002,18 @@ async function sendAiMessage(overrideText?: string): Promise<void> {
     role: "user",
     content: message,
   };
+  if (options.report) {
+    userMessage.kind = "yolo-report";
+    userMessage.yoloReportLabel = options.report.label;
+  } else {
+    aiInputMessage.value = "";
+  }
   aiMessages.value.push(userMessage);
-  aiInputMessage.value = "";
 
-  const assistantMessage: ChatMessage = {
-    id: `msg_${Date.now()}_assistant`,
-    role: "assistant",
-    content: "",
-  };
-  aiMessages.value.push(assistantMessage);
-
-  aiStreaming.value = true;
-  aiLoading.value = true;
-  aiAbortController.value = new AbortController();
-
-  const historyForRequest = conversationHistory.value.slice(0, -2);
-
-  const isAskMode = canvasMode.value === "ask";
-  const executionLog = getExecutionLogForAssistantRequest();
-
-  aiApi.assistantStream(
-    {
-      credentialId: selectedCredentialId.value,
-      model: selectedModel.value,
-      message: message,
-      currentWorkflow: currentWorkflowContext.value,
-      conversationHistory: historyForRequest,
-      conversationId: aiConversationId.value,
-      availableWorkflows: availableWorkflows.value.map((wf) => ({
-        id: wf.id,
-        name: wf.name,
-        description: wf.description,
-        input_fields: wf.input_fields,
-        output_node: wf.output_node,
-      })),
-      askMode: isAskMode,
-      executionLog,
-    },
-    (text) => {
-      aiLoading.value = false;
-      const lastMsg = aiMessages.value[aiMessages.value.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
-        lastMsg.content += text;
-      }
-    },
-    () => {
-      aiStreaming.value = false;
-      aiLoading.value = false;
-      aiAbortController.value = null;
-
-      const lastMsg = aiMessages.value[aiMessages.value.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
-        const clarify = extractClarifyBlock(lastMsg.content);
-        if (clarify) {
-          lastMsg.clarify = clarify;
-          lastMsg.hasParseError = false;
-          return;
-        }
-      }
-
-      if (isAskMode) return;
-
-      if (lastMsg && lastMsg.role === "assistant") {
-        const workflowJson = extractWorkflowJson(lastMsg.content);
-        if (workflowJson) {
-          lastMsg.workflowJson = workflowJson;
-          lastMsg.hasParseError = false;
-          playSuccessSound();
-          setTimeout(() => {
-            applyWorkflowChanges(true);
-          }, 300);
-        } else if (lastMsg.content.trim().length > 0) {
-          lastMsg.hasParseError = true;
-        }
-      }
-    },
-    (error) => {
-      aiStreaming.value = false;
-      aiLoading.value = false;
-      aiAbortController.value = null;
-
-      const lastMsg = aiMessages.value[aiMessages.value.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
-        lastMsg.content = `Error: ${error.message}`;
-      }
-    },
-    aiAbortController.value.signal,
-  );
+  const useYolo =
+    options.report !== undefined || (canvasMode.value === "agent" && yoloMode.value);
+  if (useYolo && !options.report) yoloLoop.begin();
+  streamAssistantReply(message, { useYolo });
 }
 
 function handleClarifySubmit(msg: ChatMessage, answers: ClarifyAnswer[]): void {
@@ -2044,6 +2030,11 @@ function stopAiStreaming(): void {
   }
   aiStreaming.value = false;
   aiLoading.value = false;
+  void yoloLoop.stop(lastAssistantMessage() ?? undefined);
+}
+
+function stopYoloFromCard(msg: ChatMessage): void {
+  void yoloLoop.stop(msg);
 }
 
 function retryMessage(failedMessageId: string): void {
@@ -2060,26 +2051,30 @@ function retryMessage(failedMessageId: string): void {
   if (userMessageIndex < 0) return;
 
   const userMessage = aiMessages.value[userMessageIndex].content;
+  const useYolo = canvasMode.value === "agent" && yoloMode.value;
+  if (useYolo) yoloLoop.begin();
+  streamAssistantReply(userMessage, { useYolo, idSuffix: "_retry" });
+}
 
-  const assistantMessage: ChatMessage = {
-    id: `msg_${Date.now()}_assistant_retry`,
+function streamAssistantReply(requestText: string, options: StreamAssistantReplyOptions): void {
+  aiMessages.value.push({
+    id: `msg_${Date.now()}_assistant${options.idSuffix ?? ""}`,
     role: "assistant",
     content: "",
-  };
-  aiMessages.value.push(assistantMessage);
+  });
 
   aiStreaming.value = true;
   aiLoading.value = true;
   aiAbortController.value = new AbortController();
 
   const historyForRequest = conversationHistory.value.slice(0, -2);
-  const executionLog = getExecutionLogForAssistantRequest();
+  const isAskMode = canvasMode.value === "ask";
 
   aiApi.assistantStream(
     {
       credentialId: selectedCredentialId.value,
       model: selectedModel.value,
-      message: userMessage,
+      message: requestText,
       currentWorkflow: currentWorkflowContext.value,
       conversationHistory: historyForRequest,
       conversationId: aiConversationId.value,
@@ -2090,12 +2085,14 @@ function retryMessage(failedMessageId: string): void {
         input_fields: wf.input_fields,
         output_node: wf.output_node,
       })),
-      executionLog,
+      askMode: isAskMode,
+      executionLog: getExecutionLogForAssistantRequest(),
+      yoloMode: options.useYolo,
     },
     (text) => {
       aiLoading.value = false;
-      const lastMsg = aiMessages.value[aiMessages.value.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
+      const lastMsg = lastAssistantMessage();
+      if (lastMsg) {
         lastMsg.content += text;
       }
     },
@@ -2103,40 +2100,101 @@ function retryMessage(failedMessageId: string): void {
       aiStreaming.value = false;
       aiLoading.value = false;
       aiAbortController.value = null;
-
-      const lastMsg = aiMessages.value[aiMessages.value.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
-        const clarify = extractClarifyBlock(lastMsg.content);
-        if (clarify) {
-          lastMsg.clarify = clarify;
-          lastMsg.hasParseError = false;
-          return;
-        }
-        const workflowJson = extractWorkflowJson(lastMsg.content);
-        if (workflowJson) {
-          lastMsg.workflowJson = workflowJson;
-          lastMsg.hasParseError = false;
-          playSuccessSound();
-          setTimeout(() => {
-            applyWorkflowChanges(true);
-          }, 300);
-        } else if (lastMsg.content.trim().length > 0) {
-          lastMsg.hasParseError = true;
-        }
+      const lastMsg = lastAssistantMessage();
+      if (!lastMsg) return;
+      if (options.useYolo) {
+        handleYoloResponse(lastMsg);
+        return;
       }
+      handleBuilderResponse(lastMsg, isAskMode);
     },
     (error) => {
       aiStreaming.value = false;
       aiLoading.value = false;
       aiAbortController.value = null;
-
-      const lastMsg = aiMessages.value[aiMessages.value.length - 1];
-      if (lastMsg && lastMsg.role === "assistant") {
+      const lastMsg = lastAssistantMessage();
+      if (lastMsg) {
         lastMsg.content = `Error: ${error.message}`;
       }
+      if (options.useYolo) yoloLoop.abandon();
     },
     aiAbortController.value.signal,
+    options.useYolo ? yoloStreamHandlers() : undefined,
   );
+}
+
+function handleBuilderResponse(msg: ChatMessage, isAskMode: boolean): void {
+  const clarify = extractClarifyBlock(msg.content);
+  if (clarify) {
+    msg.clarify = clarify;
+    msg.hasParseError = false;
+    return;
+  }
+  if (isAskMode) return;
+
+  const workflowJson = extractWorkflowJson(msg.content);
+  if (workflowJson) {
+    msg.workflowJson = workflowJson;
+    msg.hasParseError = false;
+    playSuccessSound();
+    setTimeout(() => {
+      applyWorkflowChanges(true);
+    }, 300);
+  } else if (msg.content.trim().length > 0) {
+    msg.hasParseError = true;
+  }
+}
+
+function handleYoloResponse(msg: ChatMessage): void {
+  const clarify = extractClarifyBlock(msg.content);
+  if (clarify) msg.clarify = clarify;
+  const workflowJson = clarify ? null : extractWorkflowJson(msg.content);
+  if (workflowJson) msg.workflowJson = workflowJson;
+  const directive = extractYoloDirective(msg.content);
+  msg.hasParseError =
+    !clarify && !workflowJson && !directive && msg.content.trim().length > 0;
+  void yoloLoop.handleAssistantResponse(msg, {
+    hasClarify: clarify !== null,
+    hasWorkflowJson: workflowJson !== null,
+    directive,
+  });
+}
+
+function yoloStreamHandlers(): AssistantStreamHandlers {
+  return {
+    onToolStart: (event) => {
+      const msg = lastAssistantMessage();
+      if (!msg) return;
+      if (!msg.yoloSteps) msg.yoloSteps = [];
+      applyYoloToolStart(msg.yoloSteps, event);
+    },
+    onToolEnd: (event) => {
+      const msg = lastAssistantMessage();
+      if (msg?.yoloSteps) applyYoloToolEnd(msg.yoloSteps, event);
+    },
+  };
+}
+
+function readYoloInputs(): YoloInputState {
+  const fields = workflowStore.allInputFields;
+  return {
+    mode: workflowStore.webhookBodyMode === "generic" ? "generic" : "legacy",
+    fieldKeys: fields.map((field) => field.key),
+    fieldDefaults: Object.fromEntries(fields.map((field) => [field.key, field.defaultValue])),
+    values: { ...workflowStore.runInputValues },
+    json: workflowStore.runInputJson,
+  };
+}
+
+function writeYoloInputs(draft: YoloInputDraft): void {
+  if (draft.mode === "generic") {
+    workflowStore.runInputJson = draft.json;
+    return;
+  }
+  for (const [key, value] of Object.entries(draft.values)) {
+    workflowStore.runInputValues[key] = value;
+  }
+  workflowStore.resetRunInputJsonFromMode();
 }
 
 
@@ -2621,8 +2679,23 @@ function preserveAgentSkillFiles(node: WorkflowNode): WorkflowNode {
 
 function applyWorkflowChanges(showMessage = true): void {
   if (!lastWorkflowJson.value) return;
+  applyWorkflowJson(lastWorkflowJson.value);
 
-  const { nodes: newNodes, edges: newEdges } = lastWorkflowJson.value;
+  if (showMessage) {
+    aiMessages.value.push({
+      id: `msg_${Date.now()}_system`,
+      role: "assistant",
+      content: "Workflow applied and tidied up!",
+    });
+  }
+
+  setTimeout(() => {
+    tidyUpNodes();
+  }, 100);
+}
+
+function applyWorkflowJson(workflowJson: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }): void {
+  const { nodes: newNodes, edges: newEdges } = workflowJson;
   const newNodeIds = new Set(newNodes.map((n) => n.id));
 
   const effectiveCredentialId = selectedCredentialId.value;
@@ -2678,21 +2751,20 @@ function applyWorkflowChanges(showMessage = true): void {
   );
   workflowStore.hasUnsavedChanges = true;
   workflowStore.clearExecution();
+}
 
-  if (showMessage) {
-    aiMessages.value.push({
-      id: `msg_${Date.now()}_system`,
-      role: "assistant",
-      content: "Workflow applied and tidied up!",
-    });
-  }
-
-  setTimeout(() => {
-    tidyUpNodes();
-  }, 100);
+/** Apply a YOLO response's workflow and wait for the layout, like the timer path does. */
+async function applyYoloWorkflow(message: ChatMessage): Promise<void> {
+  if (!message.workflowJson) return;
+  applyWorkflowJson(message.workflowJson);
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 100);
+  });
+  tidyUpNodes();
 }
 
 function clearAiChat(): void {
+  yoloLoop.reset();
   aiMessages.value = [];
   aiConversationId.value = crypto.randomUUID();
 }
@@ -2707,6 +2779,11 @@ function handleAiKeydown(event: KeyboardEvent): void {
   // message and started a run behind the panel.
   event.stopPropagation();
   sendAiMessage();
+}
+
+/** What a bubble shows: the clarify card and the YOLO steps render their blocks instead. */
+function visibleMessageText(msg: ChatMessage): string {
+  return stripYoloBlock(msg.clarify ? stripClarifyBlock(msg.content) : msg.content);
 }
 
 function renderContent(content: string): string {
@@ -3786,6 +3863,7 @@ function renderContent(content: string): string {
               <button
                 :class="['mode-toggle-btn', canvasMode === 'agent' && 'active']"
                 title="Agent mode: builds and modifies the canvas"
+                :disabled="yoloLoopActive"
                 @click="canvasMode = 'agent'"
               >
                 Agent
@@ -3793,6 +3871,7 @@ function renderContent(content: string): string {
               <button
                 :class="['mode-toggle-btn', canvasMode === 'ask' && 'active']"
                 title="Ask mode: answers questions without touching the canvas"
+                :disabled="yoloLoopActive"
                 @click="canvasMode = 'ask'"
               >
                 Ask
@@ -3879,45 +3958,69 @@ function renderContent(content: string): string {
           <div
             v-for="msg in aiMessages"
             :key="msg.id"
-            :class="['ai-message', msg.role]"
+            :class="['ai-message', msg.role, msg.kind === 'yolo-report' ? 'yolo-report' : 'group/message']"
           >
-            <!-- eslint-disable vue/no-v-html -->
-            <div
-              class="message-content"
-              v-html="renderContent(msg.clarify ? stripClarifyBlock(msg.content) : msg.content)"
-            />
-            <!-- eslint-enable vue/no-v-html -->
-            <ClarifyCard
-              v-if="msg.clarify"
-              :questions="msg.clarify"
-              :disabled="msg.clarifyAnswered || aiStreaming"
-              @submit="(answers: ClarifyAnswer[]) => handleClarifySubmit(msg, answers)"
-              @credential-saved="() => void loadAllCredentialsForSanitize()"
-            />
-            <div
-              v-if="msg.workflowJson"
-              class="workflow-detected"
+            <p
+              v-if="msg.kind === 'yolo-report'"
+              class="yolo-report-line"
+              data-testid="ai-assistant-yolo-report"
             >
-              <LayoutGrid class="w-3 h-3" />
-              <span>Auto-applying workflow...</span>
-            </div>
-            <div
-              v-if="msg.hasParseError && !aiStreaming && canvasMode === 'agent'"
-              class="parse-error-action"
-            >
-              <div class="parse-error-message">
-                <AlertCircle class="w-3 h-3" />
-                <span>Could not extract workflow from response</span>
-              </div>
-              <button
-                class="retry-btn"
-                :disabled="aiStreaming"
-                @click="retryMessage(msg.id)"
+              {{ msg.yoloReportLabel }}
+            </p>
+            <template v-else>
+              <CopyMessageButton
+                v-if="visibleMessageText(msg)"
+                :text="visibleMessageText(msg)"
+                data-testid="ai-assistant-copy-message"
+              />
+              <!-- eslint-disable vue/no-v-html -->
+              <div
+                class="message-content"
+                v-html="renderContent(visibleMessageText(msg))"
+              />
+              <!-- eslint-enable vue/no-v-html -->
+              <ClarifyCard
+                v-if="msg.clarify"
+                :questions="msg.clarify"
+                :disabled="msg.clarifyAnswered || aiStreaming"
+                @submit="(answers: ClarifyAnswer[]) => handleClarifySubmit(msg, answers)"
+                @credential-saved="() => void loadAllCredentialsForSanitize()"
+              />
+              <YoloTestInputsCard
+                v-if="msg.yoloInputs"
+                :request="msg.yoloInputs"
+                @confirm="yoloLoop.confirmInputs"
+                @stop="stopYoloFromCard(msg)"
+              />
+              <YoloStepList
+                v-if="msg.yoloSteps?.length"
+                :steps="msg.yoloSteps"
+              />
+              <div
+                v-if="msg.workflowJson && !msg.yoloSteps"
+                class="workflow-detected"
               >
-                <RefreshCcw class="w-3 h-3" />
-                Retry
-              </button>
-            </div>
+                <LayoutGrid class="w-3 h-3" />
+                <span>Auto-applying workflow...</span>
+              </div>
+              <div
+                v-if="msg.hasParseError && !aiStreaming && canvasMode === 'agent'"
+                class="parse-error-action"
+              >
+                <div class="parse-error-message">
+                  <AlertCircle class="w-3 h-3" />
+                  <span>Could not extract workflow from response</span>
+                </div>
+                <button
+                  class="retry-btn"
+                  :disabled="aiStreaming"
+                  @click="retryMessage(msg.id)"
+                >
+                  <RefreshCcw class="w-3 h-3" />
+                  Retry
+                </button>
+              </div>
+            </template>
           </div>
 
           <div
@@ -3950,21 +4053,40 @@ function renderContent(content: string): string {
           @pointerdown="onAiPanelResizePointerDown('bottom', $event)"
         />
 
-        <div class="ai-input">
+        <div
+          ref="aiInputAreaRef"
+          class="ai-input"
+          :class="{ 'ai-input-resizing': aiInputResizing }"
+        >
+          <div
+            class="ai-input-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Drag to resize the message box"
+            title="Drag to resize"
+            data-testid="ai-assistant-input-resize"
+            @pointerdown="onAiInputResizePointerDown"
+          />
           <textarea
             ref="aiTextareaRef"
             v-model="aiInputMessage"
-            :disabled="aiStreaming || !selectedCredentialId || !selectedModel"
+            :disabled="aiStreaming || yoloLoopActive || !selectedCredentialId || !selectedModel"
             :placeholder="canvasMode === 'ask' ? 'Ask a question...' : 'What do you want to automate...'"
             class="ai-textarea"
             rows="2"
+            :style="aiInputHeight !== null ? { height: `${aiInputHeight}px` } : undefined"
             @keydown="handleAiKeydown"
+          />
+          <YoloModeToggle
+            v-if="canvasMode === 'agent'"
+            v-model="yoloMode"
+            :disabled="yoloLoopActive"
           />
           <div class="ai-input-actions">
             <button
               v-if="isSpeechSupported"
               class="ai-btn-secondary"
-              :disabled="aiStreaming || isFixingTranscription || !selectedCredentialId || !selectedModel"
+              :disabled="aiStreaming || yoloLoopActive || isFixingTranscription || !selectedCredentialId || !selectedModel"
               :title="isListening ? 'Stop voice input' : isFixingTranscription ? 'Fixing...' : 'Voice input'"
               @click="toggleSpeechInput"
             >
@@ -3989,7 +4111,7 @@ function renderContent(content: string): string {
               Clear
             </button>
             <button
-              v-if="aiStreaming"
+              v-if="aiStreaming || yoloLoopActive"
               class="ai-btn-primary stop"
               title="Stop"
               @click="stopAiStreaming"
@@ -4389,8 +4511,10 @@ function renderContent(content: string): string {
 }
 
 .ai-message {
+  position: relative;
   margin-bottom: 10px;
-  padding: 10px 14px;
+  /* The right padding keeps text clear of the copy button in the corner. */
+  padding: 10px 38px 10px 14px;
   border-radius: 10px;
   max-width: 90%;
   font-size: 14px;
@@ -4406,6 +4530,19 @@ function renderContent(content: string): string {
   background: hsl(var(--muted));
   color: hsl(var(--foreground));
   margin-right: auto;
+}
+
+.ai-message.user.yolo-report {
+  margin: 0 0 10px;
+  padding: 0 2px;
+  max-width: 100%;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+}
+
+.yolo-report-line {
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .message-content {
@@ -4519,11 +4656,46 @@ function renderContent(content: string): string {
 }
 
 .ai-input {
+  position: relative;
   padding: 12px;
   border-top: 1px solid hsl(var(--border));
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.ai-input-resizing {
+  user-select: none;
+}
+
+/* Straddles the input area's top border; dragging it up makes the message box taller. */
+.ai-input-resize-handle {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.ai-input-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+  transform: translateX(-50%);
+  transition: background 0.15s;
+}
+
+.ai-input-resize-handle:hover::after,
+.ai-input-resizing .ai-input-resize-handle::after {
+  background: hsl(var(--primary) / 0.6);
 }
 
 .ai-textarea {
