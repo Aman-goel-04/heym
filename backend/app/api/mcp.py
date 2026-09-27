@@ -453,9 +453,14 @@ async def get_user_mcp_workflows(db: AsyncSession, user_id: uuid.UUID) -> list[W
         .join(WorkflowShare, WorkflowShare.workflow_id == Workflow.id)
         .where(
             WorkflowShare.user_id == user_id,
-            WorkflowShare.is_explicit_share.is_(True),
             WorkflowShare.mcp_enabled.is_(True),
             Workflow.kind != "dashboard_widget",
+            # Re-verify current access rather than gate on is_explicit_share: the toggle
+            # can be stored on a folder-only row too, and a user who still reaches the
+            # workflow through a team share keeps the MCP tool they enabled, exactly as
+            # before this advisory's fix. Once that access is gone this excludes them,
+            # regardless of what the row's mcp_enabled flag still says.
+            workflow_access_clause(user_id),
         )
         .order_by(Workflow.name.asc())
     )
@@ -729,10 +734,7 @@ async def get_mcp_config(
     workflows = await get_all_user_workflows(db, current_user.id)
 
     shares_result = await db.execute(
-        select(WorkflowShare).where(
-            WorkflowShare.user_id == current_user.id,
-            WorkflowShare.is_explicit_share.is_(True),
-        )
+        select(WorkflowShare).where(WorkflowShare.user_id == current_user.id)
     )
     shares_map = {s.workflow_id: s for s in shares_result.scalars().all()}
 
@@ -843,15 +845,16 @@ async def toggle_workflow_mcp(
         await db.refresh(workflow)
         mcp_enabled = workflow.mcp_enabled
     else:
-        # Only a real, owner-granted share can carry the MCP toggle. A row that exists
-        # solely to remember a folder placement for a team-shared workflow must not be
-        # usable here: enabling MCP through it would let a revoked team member's leftover
-        # row keep executing the workflow after the team access it depended on is gone.
+        # The row this stores the toggle on can be a folder-only placement row: the
+        # workflow_access_clause check above already re-verified current access (owner,
+        # explicit share, or team share), so writing here does not by itself grant
+        # anything. get_user_mcp_workflows re-checks that same current access at read
+        # time, so a revoked team member's leftover row stops being eligible the moment
+        # the team share is gone, regardless of what mcp_enabled still says on the row.
         share_result = await db.execute(
             select(WorkflowShare).where(
                 WorkflowShare.workflow_id == workflow_id,
                 WorkflowShare.user_id == current_user.id,
-                WorkflowShare.is_explicit_share.is_(True),
             )
         )
         share = share_result.scalar_one_or_none()

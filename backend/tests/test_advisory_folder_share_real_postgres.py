@@ -14,7 +14,7 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, text
+from sqlalchemy import delete, select
 
 from app.api.folders import _accessible_workflow_filter, _set_shared_workflow_folder
 from app.api.mcp import get_user_mcp_workflows
@@ -30,7 +30,7 @@ from app.db.models import (
 )
 from app.db.session import async_session_maker, engine
 from app.services.execution_cancellation import list_persisted_active_executions_for_user
-from app.services.workflow_access import user_has_workflow_access
+from app.services.workflow_access import explicit_workflow_share_ids, user_has_workflow_access
 
 
 class RealPostgresFolderShareRevocationTests(unittest.IsolatedAsyncioTestCase):
@@ -162,8 +162,6 @@ class RealPostgresFolderShareRevocationTests(unittest.IsolatedAsyncioTestCase):
 
         await self._revoke_team_share()
 
-        from sqlalchemy import select
-
         async with async_session_maker() as session:
             matched = (
                 await session.execute(
@@ -196,7 +194,10 @@ class RealPostgresFolderShareRevocationTests(unittest.IsolatedAsyncioTestCase):
             result = await get_workflow_for_user(session, self.workflow_id, self.member_id)
             self.assertIsNotNone(result)
 
-    async def test_mcp_cannot_be_enabled_through_a_folder_only_row(self) -> None:
+    async def test_mcp_still_works_through_a_folder_only_row_while_team_access_holds(self) -> None:
+        """A team member's MCP toggle must not regress just because their share row is
+        folder-only bookkeeping: as long as the team share that gave them access is
+        still there, they keep the capability they had before this advisory's fix."""
         from app.api.mcp import toggle_workflow_mcp
         from app.models.schemas import MCPToggleRequest
 
@@ -212,8 +213,32 @@ class RealPostgresFolderShareRevocationTests(unittest.IsolatedAsyncioTestCase):
             )
             await session.commit()
 
-        self.assertFalse(item.mcp_enabled)
+        self.assertTrue(item.mcp_enabled)
 
+        async with async_session_maker() as session:
+            eligible = await get_user_mcp_workflows(session, self.member_id)
+        self.assertIn(self.workflow_id, [w.id for w in eligible])
+
+    async def test_mcp_stops_once_team_access_behind_a_folder_only_row_is_revoked(self) -> None:
+        from app.api.mcp import toggle_workflow_mcp
+        from app.models.schemas import MCPToggleRequest
+
+        async with async_session_maker() as session:
+            await _set_shared_workflow_folder(
+                session, self.workflow_id, self.member_id, self.folder_id
+            )
+            await session.commit()
+            member = await session.get(User, self.member_id)
+            await toggle_workflow_mcp(
+                self.workflow_id, MCPToggleRequest(mcp_enabled=True), member, session
+            )
+            await session.commit()
+
+        await self._revoke_team_share()
+
+        # The row's own mcp_enabled flag is still true; only the current-access recheck
+        # excludes it now, which is the point: revocation must not depend on remembering
+        # to also clear that flag.
         async with async_session_maker() as session:
             eligible = await get_user_mcp_workflows(session, self.member_id)
         self.assertNotIn(self.workflow_id, [w.id for w in eligible])
@@ -277,164 +302,108 @@ class RealPostgresFolderShareRevocationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await session.commit()
 
+    async def test_a_real_invite_with_overlapping_team_access_and_a_folder_is_never_downgraded(
+        self,
+    ) -> None:
+        """The exact case that made an earlier revision of this fix unsafe: a user who was
+        genuinely invited directly, who also happens to reach the same workflow through a
+        team share, and who then organizes it into a folder. None of that combination may
+        ever turn their real share into folder-only bookkeeping."""
+        async with async_session_maker() as session:
+            session.add(
+                WorkflowShare(id=uuid.uuid4(), workflow_id=self.workflow_id, user_id=self.member_id)
+            )
+            await session.commit()
 
-class RealPostgresMigrationRemediationTests(unittest.IsolatedAsyncioTestCase):
-    """Exercises revision 129's data backfill against the three shapes it must tell apart."""
+            await _set_shared_workflow_folder(
+                session, self.workflow_id, self.member_id, self.folder_id
+            )
+            await session.commit()
+
+            share = (
+                await session.execute(
+                    select(WorkflowShare).where(
+                        WorkflowShare.workflow_id == self.workflow_id,
+                        WorkflowShare.user_id == self.member_id,
+                    )
+                )
+            ).scalar_one()
+            self.assertTrue(share.is_explicit_share)
+            self.assertEqual(share.folder_id, self.folder_id)
+
+        await self._revoke_team_share()
+
+        async with async_session_maker() as session:
+            result = await get_workflow_for_user(session, self.workflow_id, self.member_id)
+            self.assertIsNotNone(result)
+            share = (
+                await session.execute(
+                    select(WorkflowShare, User)
+                    .join(User, User.id == WorkflowShare.user_id)
+                    .where(WorkflowShare.workflow_id == self.workflow_id)
+                )
+            ).all()
+            self.assertEqual(len(share), 1)
+
+
+class RealPostgresExplicitShareCrossUserIsolationTests(unittest.IsolatedAsyncioTestCase):
+    """explicit_workflow_share_ids must scope strictly to the user it is asked about."""
 
     async def asyncSetUp(self) -> None:
         await engine.dispose()
         self.owner_id = uuid.uuid4()
-        self.with_team_id = uuid.uuid4()
-        self.without_team_id = uuid.uuid4()
-        self.explicit_id = uuid.uuid4()
-        self.team_id = uuid.uuid4()
-        self.folder_id = uuid.uuid4()
-        self.wf_with_team = uuid.uuid4()
-        self.wf_without_team = uuid.uuid4()
-        self.wf_explicit = uuid.uuid4()
+        self.invited_user_id = uuid.uuid4()
+        self.other_user_id = uuid.uuid4()
+        self.workflow_id = uuid.uuid4()
 
         async with async_session_maker() as session:
             session.add_all(
                 User(id=uid, email=f"u{uid.hex[:8]}@example.com", hashed_password="x", name="U")
-                for uid in (
-                    self.owner_id,
-                    self.with_team_id,
-                    self.without_team_id,
-                    self.explicit_id,
-                )
-            )
-            await session.flush()
-            session.add(Team(id=self.team_id, name="T", creator_id=self.owner_id))
-            session.add(Folder(id=self.folder_id, name="F", owner_id=self.owner_id, parent_id=None))
-            await session.flush()
-            session.add(
-                TeamMember(id=uuid.uuid4(), team_id=self.team_id, user_id=self.with_team_id)
-            )
-            session.add_all(
-                Workflow(id=wid, name="wf", owner_id=self.owner_id, nodes=[], edges=[])
-                for wid in (self.wf_with_team, self.wf_without_team, self.wf_explicit)
+                for uid in (self.owner_id, self.invited_user_id, self.other_user_id)
             )
             await session.flush()
             session.add(
-                WorkflowTeamShare(
-                    id=uuid.uuid4(), workflow_id=self.wf_with_team, team_id=self.team_id
-                )
+                Workflow(id=self.workflow_id, name="wf", owner_id=self.owner_id, nodes=[], edges=[])
             )
-            # All three pre-date the fix, so all start is_explicit_share=true, as the
-            # 128 migration's default preserves for every row that already existed.
-            session.add_all(
-                [
-                    WorkflowShare(
-                        id=uuid.uuid4(),
-                        workflow_id=self.wf_with_team,
-                        user_id=self.with_team_id,
-                        folder_id=self.folder_id,
-                        is_explicit_share=True,
-                    ),
-                    WorkflowShare(
-                        id=uuid.uuid4(),
-                        workflow_id=self.wf_without_team,
-                        user_id=self.without_team_id,
-                        folder_id=self.folder_id,
-                        is_explicit_share=True,
-                    ),
-                    WorkflowShare(
-                        id=uuid.uuid4(),
-                        workflow_id=self.wf_explicit,
-                        user_id=self.explicit_id,
-                        folder_id=self.folder_id,
-                        is_explicit_share=True,
-                    ),
-                ]
+            await session.flush()
+            session.add(
+                WorkflowShare(
+                    id=uuid.uuid4(), workflow_id=self.workflow_id, user_id=self.invited_user_id
+                )
             )
             await session.commit()
 
     async def asyncTearDown(self) -> None:
         async with async_session_maker() as session:
-            for wid in (self.wf_with_team, self.wf_without_team, self.wf_explicit):
-                await session.execute(delete(WorkflowShare).where(WorkflowShare.workflow_id == wid))
-                await session.execute(
-                    delete(WorkflowTeamShare).where(WorkflowTeamShare.workflow_id == wid)
-                )
-                await session.execute(delete(Workflow).where(Workflow.id == wid))
-            await session.execute(delete(TeamMember).where(TeamMember.team_id == self.team_id))
-            await session.execute(delete(Team).where(Team.id == self.team_id))
-            await session.execute(delete(Folder).where(Folder.id == self.folder_id))
+            await session.execute(
+                delete(WorkflowShare).where(WorkflowShare.workflow_id == self.workflow_id)
+            )
+            await session.execute(delete(Workflow).where(Workflow.id == self.workflow_id))
             await session.execute(
                 delete(User).where(
-                    User.id.in_(
-                        [self.owner_id, self.with_team_id, self.without_team_id, self.explicit_id]
-                    )
+                    User.id.in_([self.owner_id, self.invited_user_id, self.other_user_id])
                 )
             )
             await session.commit()
         await engine.dispose()
 
-    async def _run_remediation_sql(self) -> None:
+    async def test_another_users_explicit_share_does_not_grant_access(self) -> None:
         async with async_session_maker() as session:
-            await session.execute(
-                text(
-                    """
-                    UPDATE workflow_shares
-                    SET is_explicit_share = false
-                    WHERE folder_id IS NOT NULL
-                      AND is_explicit_share = true
-                      AND EXISTS (
-                          SELECT 1
-                          FROM workflow_team_shares wts
-                          JOIN team_members tm ON tm.team_id = wts.team_id
-                          WHERE wts.workflow_id = workflow_shares.workflow_id
-                            AND tm.user_id = workflow_shares.user_id
-                      )
-                    """
-                )
+            invited_ids = (
+                (await session.execute(explicit_workflow_share_ids(self.invited_user_id)))
+                .scalars()
+                .all()
             )
-            await session.commit()
+            other_ids = (
+                (await session.execute(explicit_workflow_share_ids(self.other_user_id)))
+                .scalars()
+                .all()
+            )
 
-    async def test_row_with_current_team_access_is_downgraded(self) -> None:
-        await self._run_remediation_sql()
-        async with async_session_maker() as session:
-            row = (
-                await session.execute(
-                    text(
-                        "SELECT is_explicit_share FROM workflow_shares "
-                        "WHERE workflow_id = :w AND user_id = :u"
-                    ),
-                    {"w": self.wf_with_team, "u": self.with_team_id},
-                )
-            ).scalar_one()
-        self.assertFalse(row)
+            self.assertIn(self.workflow_id, invited_ids)
+            self.assertNotIn(self.workflow_id, other_ids)
 
-    async def test_ambiguous_row_without_team_access_is_left_alone(self) -> None:
-        await self._run_remediation_sql()
-        async with async_session_maker() as session:
-            row = (
-                await session.execute(
-                    text(
-                        "SELECT is_explicit_share FROM workflow_shares "
-                        "WHERE workflow_id = :w AND user_id = :u"
-                    ),
-                    {"w": self.wf_without_team, "u": self.without_team_id},
-                )
-            ).scalar_one()
-        self.assertTrue(row)
-
-    async def test_row_belonging_to_a_different_workflows_team_access_is_unaffected(self) -> None:
-        """The explicit-share fixture happens to share the same folder id; confirms the
-        remediation keys off (workflow_id, user_id) team access, not the folder alone."""
-        await self._run_remediation_sql()
-        async with async_session_maker() as session:
-            row = (
-                await session.execute(
-                    text(
-                        "SELECT is_explicit_share FROM workflow_shares "
-                        "WHERE workflow_id = :w AND user_id = :u"
-                    ),
-                    {"w": self.wf_explicit, "u": self.explicit_id},
-                )
-            ).scalar_one()
-        self.assertTrue(row)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            result = await get_workflow_for_user(session, self.workflow_id, self.other_user_id)
+            self.assertIsNone(result)
+            result = await get_workflow_for_user(session, self.workflow_id, self.invited_user_id)
+            self.assertIsNotNone(result)
