@@ -863,14 +863,7 @@ async def get_recent_executions_for_user(
     exec_query = (
         select(ExecutionHistory, Workflow)
         .join(Workflow, ExecutionHistory.workflow_id == Workflow.id)
-        .where(
-            or_(
-                Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
-            )
-        )
+        .where(workflow_access_clause(user_id))
         .order_by(ExecutionHistory.started_at.desc())
         .limit(limit)
     )
