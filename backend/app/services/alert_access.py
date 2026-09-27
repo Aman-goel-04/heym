@@ -34,11 +34,19 @@ async def get_accessible_alert(db: AsyncSession, alert_id: UUID, user_id: UUID) 
     if shared is not None:
         return shared
 
+    # IN subqueries, not a join to TeamMember, so a user in two teams that both hold the
+    # share still matches a single row.
     team_result = await db.execute(
-        select(Alert)
-        .join(AlertTeamShare, AlertTeamShare.alert_id == Alert.id)
-        .join(TeamMember, TeamMember.team_id == AlertTeamShare.team_id)
-        .where(Alert.id == alert_id, TeamMember.user_id == user_id)
+        select(Alert).where(
+            Alert.id == alert_id,
+            Alert.id.in_(
+                select(AlertTeamShare.alert_id).where(
+                    AlertTeamShare.team_id.in_(
+                        select(TeamMember.team_id).where(TeamMember.user_id == user_id)
+                    )
+                )
+            ),
+        )
     )
     return team_result.scalar_one_or_none()
 

@@ -41,6 +41,7 @@ from app.models.schemas import (
 )
 from app.services.audit_log import OUTCOME_DENIED, audit
 from app.services.codex_usage_service import fetch_codex_usage
+from app.services.credential_access import team_shared_credential_clause
 from app.services.decision_models import (
     DecisionProviderError,
     DecisionRequestError,
@@ -428,12 +429,9 @@ async def _get_accessible_credential(
         return credential
 
     team_result = await db.execute(
-        select(Credential)
-        .join(CredentialTeamShare, CredentialTeamShare.credential_id == Credential.id)
-        .join(TeamMember, TeamMember.team_id == CredentialTeamShare.team_id)
-        .where(
+        select(Credential).where(
             Credential.id == credential_id,
-            TeamMember.user_id == current_user.id,
+            team_shared_credential_clause(current_user.id),
         )
     )
     return team_result.scalar_one_or_none()
@@ -1417,12 +1415,9 @@ async def get_credential(
 
     if credential is None:
         team_result = await db.execute(
-            select(Credential)
-            .join(CredentialTeamShare, CredentialTeamShare.credential_id == Credential.id)
-            .join(TeamMember, TeamMember.team_id == CredentialTeamShare.team_id)
-            .where(
+            select(Credential).where(
                 Credential.id == credential_id,
-                TeamMember.user_id == current_user.id,
+                team_shared_credential_clause(current_user.id),
             )
         )
         credential = team_result.scalar_one_or_none()
@@ -1657,12 +1652,9 @@ async def get_credential_models(
 
     if credential is None:
         team_result = await db.execute(
-            select(Credential)
-            .join(CredentialTeamShare, CredentialTeamShare.credential_id == Credential.id)
-            .join(TeamMember, TeamMember.team_id == CredentialTeamShare.team_id)
-            .where(
+            select(Credential).where(
                 Credential.id == credential_id,
-                TeamMember.user_id == current_user.id,
+                team_shared_credential_clause(current_user.id),
             )
         )
         credential = team_result.scalar_one_or_none()
