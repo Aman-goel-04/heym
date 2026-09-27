@@ -1540,12 +1540,13 @@ async def list_persisted_active_executions_for_user(
     """Return active execution rows for workflows accessible to the user."""
     from sqlalchemy import exists, or_, select
 
-    from app.db.models import ActiveWorkflowExecution, Workflow, WorkflowRunQueue, WorkflowShare
+    from app.db.models import ActiveWorkflowExecution, Workflow, WorkflowRunQueue
     from app.services.cluster.run_queue import (
         STATUS_CLAIMED,
         STATUS_QUEUED,
         STATUS_WAITING_FOR_MAIN,
     )
+    from app.services.workflow_access import workflow_access_clause
 
     # Keep queued runs visible during the handoff interval
     # (between dispatcher relinquishment and worker's first active-row write).
@@ -1564,12 +1565,7 @@ async def list_persisted_active_executions_for_user(
                 ActiveWorkflowExecution.execution_id == WorkflowRunQueue.execution_id,
                 ActiveWorkflowExecution.cancel_requested_at.is_not(None),
             ),
-            or_(
-                Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
-            ),
+            workflow_access_clause(user_id),
         )
         .order_by(WorkflowRunQueue.enqueued_at.desc())
     )
@@ -1607,12 +1603,7 @@ async def list_persisted_active_executions_for_user(
                 ),
             ),
             ActiveWorkflowExecution.cancel_requested_at.is_(None),
-            or_(
-                Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
-            ),
+            workflow_access_clause(user_id),
         )
         .order_by(ActiveWorkflowExecution.started_at.desc())
     )
@@ -1656,21 +1647,18 @@ async def list_pending_review_executions_for_user(
     user_id: uuid.UUID,
 ) -> list[PendingReviewExecutionRecord]:
     """Return non-expired pending HITL/Codex review executions for accessible workflows."""
-    from sqlalchemy import literal, or_, select, union_all
+    from sqlalchemy import literal, select, union_all
 
     from app.db.models import (
         CodexFollowupRequest,
         ExecutionHistory,
         HITLRequest,
         Workflow,
-        WorkflowShare,
     )
+    from app.services.workflow_access import workflow_access_clause
 
     now = _utcnow()
-    accessible_workflow = or_(
-        Workflow.owner_id == user_id,
-        Workflow.id.in_(select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)),
-    )
+    accessible_workflow = workflow_access_clause(user_id)
 
     hitl_stmt = (
         select(

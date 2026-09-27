@@ -12,11 +12,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Workflow, WorkflowShare
+from app.db.models import Workflow
 from app.models.schemas import ActiveExecutionItem
 from app.services.execution_cancellation import (
     get_active_execution_progress,
@@ -24,6 +24,7 @@ from app.services.execution_cancellation import (
     list_pending_review_executions_for_user,
     list_persisted_active_executions_for_user,
 )
+from app.services.workflow_access import workflow_access_clause
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,7 @@ async def collect_active_executions_for_user(
             db.execute(
                 select(Workflow).where(
                     Workflow.id.in_(workflow_ids),
-                    or_(
-                        Workflow.owner_id == user_id,
-                        Workflow.id.in_(
-                            select(WorkflowShare.workflow_id).where(
-                                WorkflowShare.user_id == user_id
-                            )
-                        ),
-                    ),
+                    workflow_access_clause(user_id),
                 )
             ),
         )
