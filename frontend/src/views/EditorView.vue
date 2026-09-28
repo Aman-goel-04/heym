@@ -769,6 +769,7 @@ onMounted(async () => {
     loading.value = false;
   }
   await focusNodeFromQuery();
+  await focusWorkflowSettingFromQuery();
   await playRunbookFromQueryIfReady();
 });
 
@@ -796,6 +797,39 @@ async function focusNodeFromQuery(): Promise<void> {
   workflowStore.propertiesPanelTab = "properties";
   if (isMobile.value) {
     workflowStore.mobileEditorTab = "properties";
+  }
+}
+
+const MINUTES_SAVED_FOCUS = "minutesSavedPerRun";
+
+/**
+ * `?focus=minutesSavedPerRun` opens workflow settings on the time-saved field.
+ * Analytics uses this when a workflow has no estimate configured.
+ */
+async function focusWorkflowSettingFromQuery(): Promise<void> {
+  if (route.query.focus !== MINUTES_SAVED_FOCUS) return;
+
+  const nextQuery = { ...route.query };
+  delete nextQuery.focus;
+  await router.replace({
+    name: "editor",
+    params: { id: workflowId.value },
+    query: nextQuery,
+  });
+
+  await nextTick();
+  workflowStore.clearSelection();
+  workflowStore.propertiesPanelTab = "properties";
+  workflowStore.openPropertiesPanel();
+  rightPanelOpen.value = true;
+  if (isMobile.value) {
+    workflowStore.mobileEditorTab = "properties";
+  }
+  await nextTick();
+  const field = document.getElementById("workflow-minutes-saved");
+  field?.scrollIntoView({ block: "center" });
+  if (field instanceof HTMLInputElement) {
+    field.focus();
   }
 }
 
@@ -852,6 +886,7 @@ watch(
       }
       if (loadedWorkflow) {
         await bringExecutionFromRoute();
+        await focusWorkflowSettingFromQuery();
         await playRunbookFromQueryIfReady();
       }
     }

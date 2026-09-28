@@ -1417,6 +1417,7 @@ class WorkflowBreakdownItem(BaseModel):
     success_rate: float
     error_rate: float
     avg_latency_ms: float
+    time_saved_minutes: float | None = None
 
 
 class WorkflowBreakdownResponse(BaseModel):

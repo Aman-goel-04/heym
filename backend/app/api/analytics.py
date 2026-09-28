@@ -77,6 +77,16 @@ def calculate_percentile(values: list[float], percentile: float) -> float:
     return sorted_values[index]
 
 
+def time_saved_minutes_for_runs(
+    success_count: int,
+    minutes_saved_per_run: float | None,
+) -> float | None:
+    """Summed minutes for one workflow, or None when no per-run estimate is set."""
+    if minutes_saved_per_run is None or minutes_saved_per_run <= 0:
+        return None
+    return float(minutes_saved_per_run) * success_count
+
+
 def compute_time_saved_minutes(
     success_by_workflow: dict[uuid.UUID | None, int],
     rate_by_workflow: dict[uuid.UUID, float],
@@ -86,9 +96,9 @@ def compute_time_saved_minutes(
     for wid, success_count in success_by_workflow.items():
         if wid is None:
             continue
-        rate = rate_by_workflow.get(wid)
-        if rate:
-            total += rate * success_count
+        saved = time_saved_minutes_for_runs(success_count, rate_by_workflow.get(wid))
+        if saved:
+            total += saved
     return total
 
 
@@ -837,6 +847,15 @@ async def get_workflow_breakdown(
                 )  # type: ignore[assignment]
                 agg["latency_samples"] = int(agg["latency_samples"]) + 1  # type: ignore[assignment]
 
+    accessible_ids = set(accessible_workflow_ids)
+    real_ids = [wf_id for wf_id in aggregates if wf_id in accessible_ids]
+    configured_rates: dict[uuid.UUID, float | None] = {}
+    if real_ids:
+        rate_rows = await db.execute(
+            select(Workflow.id, Workflow.minutes_saved_per_run).where(Workflow.id.in_(real_ids))
+        )
+        configured_rates = {rid: float(rate) if rate else None for rid, rate in rate_rows.all()}
+
     items: list[WorkflowBreakdownItem] = []
     for wf_id, agg in aggregates.items():
         total = int(agg["total"])  # type: ignore[assignment]
@@ -859,6 +878,10 @@ async def get_workflow_breakdown(
                 success_rate=success_rate,
                 error_rate=error_rate,
                 avg_latency_ms=avg_latency,
+                time_saved_minutes=time_saved_minutes_for_runs(
+                    success,
+                    configured_rates.get(wf_id),
+                ),
             )
         )
 

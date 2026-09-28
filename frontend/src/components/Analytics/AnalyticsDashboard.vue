@@ -419,7 +419,7 @@ const latencyChart = computed(() => {
   };
 });
 
-type SortKey = "workflow_name" | "execution_count" | "success_rate" | "error_count" | "avg_latency_ms" | "error_rate";
+type SortKey = "workflow_name" | "execution_count" | "success_rate" | "error_count" | "avg_latency_ms" | "error_rate" | "time_saved_minutes";
 type SortDir = "asc" | "desc";
 
 const usedSortKey = ref<SortKey>("execution_count");
@@ -447,12 +447,16 @@ function toggleFailedSort(key: SortKey): void {
 
 function sortItems(items: WorkflowBreakdownItem[], key: SortKey, dir: SortDir): WorkflowBreakdownItem[] {
   return [...items].sort((a, b) => {
-    const aVal = a[key] as number | string;
-    const bVal = b[key] as number | string;
+    const aVal = a[key];
+    const bVal = b[key];
     if (typeof aVal === "string" && typeof bVal === "string") {
       return dir === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
     }
-    return dir === "asc" ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
+    if (aVal == null && bVal == null) return 0;
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+    if (typeof aVal !== "number" || typeof bVal !== "number") return 0;
+    return dir === "asc" ? aVal - bVal : bVal - aVal;
   });
 }
 
@@ -630,6 +634,15 @@ function formatDateRangeLabel(range: AnalyticsDateRange): string {
 
 function selectWorkflow(id: string): void {
   workflowId.value = id;
+}
+
+function openTimeSavedSetting(id: string): void {
+  if (!isKnownWorkflowRow(id)) return;
+  router.push({
+    name: "editor",
+    params: { id },
+    query: { focus: "minutesSavedPerRun" },
+  }).catch(() => {});
 }
 
 function isKnownWorkflowRow(id: string): boolean {
@@ -919,9 +932,9 @@ function goToWorkflow(): void {
 
       <div
         v-if="!workflowId && workflowBreakdown && workflowBreakdown.length > 0"
-        class="grid grid-cols-1 gap-6 lg:grid-cols-2"
+        class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]"
       >
-        <Card class="p-4">
+        <Card class="p-4 min-w-0">
           <h3 class="mb-4 text-lg font-semibold">
             Most Used Workflows
           </h3>
@@ -963,8 +976,8 @@ function goToWorkflow(): void {
                         :is="usedSortKey === 'success_rate' ? (usedSortDir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown"
                         :class="['w-3 h-3 shrink-0', usedSortKey === 'success_rate' ? 'text-primary' : 'text-muted-foreground/40 group-hover:text-muted-foreground']"
                       />
-                      <span class="hidden sm:inline">Success %</span>
-                      <span class="sm:hidden">OK%</span>
+                      <span class="hidden sm:inline">Success</span>
+                      <span class="sm:hidden">OK</span>
                     </span>
                   </th>
                   <th
@@ -988,8 +1001,20 @@ function goToWorkflow(): void {
                         :is="usedSortKey === 'avg_latency_ms' ? (usedSortDir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown"
                         :class="['w-3 h-3 shrink-0', usedSortKey === 'avg_latency_ms' ? 'text-primary' : 'text-muted-foreground/40 group-hover:text-muted-foreground']"
                       />
-                      <span class="hidden sm:inline">Avg Latency</span>
-                      <span class="sm:hidden">Lat.</span>
+                      <span>Latency</span>
+                    </span>
+                  </th>
+                  <th
+                    class="p-1.5 sm:p-2 text-right font-medium cursor-pointer select-none hover:text-foreground group"
+                    @click="toggleUsedSort('time_saved_minutes')"
+                  >
+                    <span class="flex items-center justify-end gap-1">
+                      <component
+                        :is="usedSortKey === 'time_saved_minutes' ? (usedSortDir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown"
+                        :class="['w-3 h-3 shrink-0', usedSortKey === 'time_saved_minutes' ? 'text-primary' : 'text-muted-foreground/40 group-hover:text-muted-foreground']"
+                      />
+                      <span class="hidden sm:inline">Time Saved</span>
+                      <span class="sm:hidden">Saved</span>
                     </span>
                   </th>
                 </tr>
@@ -1021,13 +1046,29 @@ function goToWorkflow(): void {
                   <td class="p-1.5 sm:p-2 text-right tabular-nums">
                     {{ formatLatency(item.avg_latency_ms) }}
                   </td>
+                  <td class="p-1.5 sm:p-2 text-right tabular-nums">
+                    <button
+                      v-if="item.time_saved_minutes == null && isKnownWorkflowRow(item.workflow_id)"
+                      type="button"
+                      class="text-muted-foreground underline decoration-dotted hover:text-foreground"
+                      title="Set time saved per run"
+                      @click.stop="openTimeSavedSetting(item.workflow_id)"
+                    >
+                      Not Set
+                    </button>
+                    <span
+                      v-else-if="item.time_saved_minutes == null"
+                      class="text-muted-foreground"
+                    >Not Set</span>
+                    <span v-else>{{ formatTimeSaved(item.time_saved_minutes) }}</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
         </Card>
 
-        <Card class="p-4">
+        <Card class="p-4 min-w-0">
           <h3 class="mb-4 text-lg font-semibold">
             Most Failed Workflows
           </h3>
@@ -1069,8 +1110,8 @@ function goToWorkflow(): void {
                         :is="failedSortKey === 'error_rate' ? (failedSortDir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown"
                         :class="['w-3 h-3 shrink-0', failedSortKey === 'error_rate' ? 'text-primary' : 'text-muted-foreground/40 group-hover:text-muted-foreground']"
                       />
-                      <span class="hidden sm:inline">Error %</span>
-                      <span class="sm:hidden">Err%</span>
+                      <span class="hidden sm:inline">Error</span>
+                      <span class="sm:hidden">Err</span>
                     </span>
                   </th>
                   <th
@@ -1094,8 +1135,7 @@ function goToWorkflow(): void {
                         :is="failedSortKey === 'avg_latency_ms' ? (failedSortDir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown"
                         :class="['w-3 h-3 shrink-0', failedSortKey === 'avg_latency_ms' ? 'text-primary' : 'text-muted-foreground/40 group-hover:text-muted-foreground']"
                       />
-                      <span class="hidden sm:inline">Avg Latency</span>
-                      <span class="sm:hidden">Lat.</span>
+                      <span>Latency</span>
                     </span>
                   </th>
                 </tr>

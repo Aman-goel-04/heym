@@ -10,7 +10,7 @@ The **Analytics** tab shows execution metrics and trends for your workflows. Mon
 - **Total executions** – Count of workflow runs in the selected period
 - **Success rate** – Percentage of successful runs
 - **Average duration** – Mean execution time
-- **Time saved** – Total estimated time saved: each workflow's configured minutes-saved-per-run × its successful runs
+- **Time saved** – Total estimated time saved: each workflow's configured minutes-saved-per-run × its successful runs, summed across the selected window
 - **Trends** – Up/down indicators vs previous period
 
 ## Time Range
@@ -27,10 +27,11 @@ The **Analytics** tab shows execution metrics and trends for your workflows. Mon
 
 ## Tables
 
-Two tables show workflow usage: **Most Used** and **Most Failed**.
+Two tables show workflow usage: **Most Used** (wider) and **Most Failed**.
 
+- **Time Saved** – Most Used shows each workflow's summed time saved (minutes saved per run × successful runs). **Not Set** means the estimate is missing; click it to open that field on the workflow.
 - **Sortable columns** – Click a column header to sort by that column. Click again to toggle ascending/descending. Arrow indicators show sort direction.
-- **Mobile labels** – On small screens, column labels are shortened (e.g. "Executions" → "Runs", "Success %" → "OK%", "Avg Latency" → "Lat.") so the tables fit without horizontal scroll.
+- **Mobile labels** – On small screens, column labels are shortened (e.g. "Executions" → "Runs", "Success" → "OK", "Error" → "Err") so the tables fit without horizontal scroll.
 
 ## Charts
 
