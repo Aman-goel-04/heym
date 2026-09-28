@@ -352,11 +352,11 @@ describe("shipped release registry", () => {
     const catalog = buildReleaseTourCatalog(RELEASE_REGISTRY);
 
     expect(catalog?.slides.map((slide) => slide.id)).toEqual([
+      "dashboard-hitl",
       "assistant-data-tables",
       "assistant-yolo-mode",
       "dashboard-sharing",
       "evals-judge",
-      "chat-credentials",
     ]);
   });
 
