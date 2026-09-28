@@ -13,6 +13,7 @@ import {
   FolderPlus,
   History,
   LayoutTemplate,
+  Loader2,
   Palette,
   Pin,
   Plus,
@@ -53,6 +54,7 @@ import GlobalVariablesPanel from "@/components/GlobalVariables/GlobalVariablesPa
 
 import AppHeader from "@/components/Layout/AppHeader.vue";
 import DashboardNav from "@/components/Layout/DashboardNav.vue";
+import QuickWorkflowRunPanel from "@/components/Layout/QuickWorkflowRunPanel.vue";
 import WorkspaceShell from "@/components/Layout/WorkspaceShell.vue";
 import MCPPanel from "@/components/MCP/MCPPanel.vue";
 import ExecutionHistoryAllDialog from "@/components/Panels/ExecutionHistoryAllDialog.vue";
@@ -79,6 +81,7 @@ import { resolveShowcaseContext } from "@/features/showcase/showcaseResolver";
 import TemplatesPage from "@/features/templates/components/TemplatesPage.vue";
 import { useRunbookPlayer } from "@/features/runbook/useRunbookPlayer";
 import { joinOriginAndPath } from "@/lib/appUrl";
+import { previewRunStartsImmediately, shouldRunInsidePreviewSheet } from "@/lib/previewRun";
 import { isPaletteOpenInNewTab } from "@/lib/paletteNavigate";
 import { cn } from "@/lib/utils";
 import { normalizeWorkflowEdges } from "@/lib/workflowEdges";
@@ -211,6 +214,11 @@ const workflows = ref<WorkflowListItem[]>([]);
 const selectedWorkflowId = ref<string | null>(null);
 const statusFilter = ref<WorkflowStatusFilterValue>("all");
 const isPreviewSheetOpen = ref(false);
+/** Below the desktop split, Run stays in the sheet: inputs when the workflow has them, otherwise the live result. */
+const previewSheetShowsRun = ref(false);
+const previewRunLoading = ref(false);
+const previewRunError = ref<string | null>(null);
+let previewRunRequest = 0;
 const workflowSearchQuery = ref("");
 const workflowSearchInput = ref<HTMLInputElement | null>(null);
 const loading = ref(true);
@@ -469,6 +477,10 @@ const isSelectedWorkflowRunning = computed((): boolean => {
 });
 
 function selectWorkflow(workflow: WorkflowListItem): void {
+  if (selectedWorkflowId.value !== workflow.id) {
+    previewSheetShowsRun.value = false;
+    previewRunError.value = null;
+  }
   selectedWorkflowId.value = workflow.id;
   if (!isDesktopSplitView.value) {
     isPreviewSheetOpen.value = true;
@@ -477,15 +489,68 @@ function selectWorkflow(workflow: WorkflowListItem): void {
 }
 
 function closePreviewSheet(): void {
+  previewRunRequest += 1;
   isPreviewSheetOpen.value = false;
+  previewSheetShowsRun.value = false;
+  previewRunLoading.value = false;
+  previewRunError.value = null;
 }
 
-/** The Run action hands the workflow to the quick drawer, where inputs and output live. */
+function backToPreviewFromRun(): void {
+  previewRunRequest += 1;
+  previewSheetShowsRun.value = false;
+  previewRunLoading.value = false;
+  previewRunError.value = null;
+}
+
+function openWorkflowFromRun(event: MouseEvent): void {
+  const workflowId = selectedWorkflowId.value;
+  if (!workflowId) return;
+  openWorkflowFromPreview(workflowId, event);
+}
+
+/**
+ * On the desktop split, Run opens the right-hand quick drawer. While the preview
+ * is a bottom sheet, that handoff only closes the sheet, so the same inputs-and-result
+ * flow stays inside it.
+ */
 async function runWorkflowInQuickDrawer(workflowId: string): Promise<void> {
-  closePreviewSheet();
-  quickDrawerStore.openDrawer();
-  await quickDrawerStore.ensureWorkflows();
-  quickDrawerStore.selectWorkflow(workflowId, true);
+  if (!shouldRunInsidePreviewSheet(!isDesktopSplitView.value)) {
+    closePreviewSheet();
+    quickDrawerStore.openDrawer();
+    await quickDrawerStore.ensureWorkflows();
+    quickDrawerStore.selectWorkflow(workflowId, true);
+    return;
+  }
+
+  const requestId = previewRunRequest + 1;
+  previewRunRequest = requestId;
+  previewSheetShowsRun.value = true;
+  previewRunLoading.value = true;
+  previewRunError.value = null;
+
+  try {
+    await quickDrawerStore.ensureWorkflows();
+    if (requestId !== previewRunRequest || !isPreviewSheetOpen.value) return;
+
+    quickDrawerStore.selectWorkflow(workflowId, true);
+    const inputFieldCount = quickDrawerStore.selectedWorkflow?.inputFields.length;
+    if (inputFieldCount === undefined) {
+      previewRunError.value = "Could not load this workflow.";
+      return;
+    }
+    if (previewRunStartsImmediately(inputFieldCount)) {
+      await quickDrawerStore.runSelectedWorkflow();
+    }
+  } catch {
+    if (requestId === previewRunRequest) {
+      previewRunError.value = "Could not start this workflow.";
+    }
+  } finally {
+    if (requestId === previewRunRequest) {
+      previewRunLoading.value = false;
+    }
+  }
 }
 
 function openWorkflowFromPreview(id: string, event: MouseEvent): void {
@@ -743,7 +808,7 @@ onMounted(async () => {
     showWorkflowActionSheet.value = false;
     workflowActionWorkflow.value = null;
     actionSheetConsumedId.value = null;
-    isPreviewSheetOpen.value = false;
+    closePreviewSheet();
     clearWorkflowSearch();
   });
 });
@@ -779,7 +844,7 @@ function syncSelectionWithWorkflows(): void {
     !workflows.value.some((workflow) => workflow.id === selectedWorkflowId.value)
   ) {
     selectedWorkflowId.value = null;
-    isPreviewSheetOpen.value = false;
+    closePreviewSheet();
   }
 
   if (selectedWorkflowId.value || !isDesktopSplitView.value) return;
@@ -2479,22 +2544,57 @@ async function restoreFromTrash(workflowId: string, event: Event): Promise<void>
             aria-label="Workflow preview"
             data-testid="workflow-preview-sheet"
           >
-            <div class="flex items-center justify-between px-4 pb-1 pt-2.5">
+            <div class="relative h-4 shrink-0">
               <span
-                class="mx-auto h-1 w-10 rounded-full bg-border"
+                class="absolute left-1/2 top-1.5 h-1 w-9 -translate-x-1/2 rounded-full bg-border"
                 aria-hidden="true"
               />
               <button
                 type="button"
-                class="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+                class="absolute right-1.5 top-2.5 flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
                 aria-label="Close preview"
                 @click="closePreviewSheet"
               >
-                <X class="h-4 w-4" />
+                <X class="h-5 w-5" />
               </button>
             </div>
             <div class="flex min-h-0 flex-1 flex-col overflow-hidden pb-[env(safe-area-inset-bottom)]">
+              <div
+                v-if="previewSheetShowsRun && previewRunLoading"
+                class="flex flex-1 items-center justify-center gap-2 px-6 text-sm text-muted-foreground"
+                data-testid="workflow-preview-run-loading"
+              >
+                <Loader2 class="h-4 w-4 animate-spin" />
+                Preparing run...
+              </div>
+              <div
+                v-else-if="previewSheetShowsRun && previewRunError"
+                class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+                data-testid="workflow-preview-run-error"
+              >
+                <p class="text-sm text-destructive">
+                  {{ previewRunError }}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  @click="backToPreviewFromRun"
+                >
+                  Back
+                </Button>
+              </div>
+              <QuickWorkflowRunPanel
+                v-else-if="previewSheetShowsRun"
+                :show-close="false"
+                :show-pin="false"
+                :show-eyebrow="false"
+                compact
+                back-label="Back to preview"
+                @back="backToPreviewFromRun"
+                @go-to-workflow="openWorkflowFromRun"
+              />
               <WorkflowPreviewPanel
+                v-else
                 :summary="selectedWorkflow"
                 :detail="selectedWorkflowDetail"
                 :last-run="selectedWorkflowLastRun"
