@@ -46,6 +46,7 @@ export interface WorkflowBreakdownItem {
   success_rate: number;
   error_rate: number;
   avg_latency_ms: number;
+  time_saved_minutes: number | null;
 }
 
 export interface WorkflowBreakdownResponse {
