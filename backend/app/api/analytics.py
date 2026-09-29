@@ -116,6 +116,7 @@ async def upsert_workflow_analytics_snapshot(
     status: str,
     execution_time_ms: float,
     started_at: datetime | None = None,
+    count_execution: bool = True,
 ) -> None:
     """Store metadata-only hourly analytics snapshot for UI analytics and chat analytics tools."""
     if workflow_id is None and owner_id is None:
@@ -125,8 +126,11 @@ async def upsert_workflow_analytics_snapshot(
     bucket_start = normalize_bucket_start(run_at)
     is_success = 1 if status == "success" else 0
     is_error = 1 if status == "error" else 0
+    exec_increment = 1 if count_execution else 0
     has_latency = 1 if execution_time_ms > 0 else 0
     latency = execution_time_ms if execution_time_ms > 0 else 0.0
+    latency_sample_increment = has_latency if count_execution else 0
+    latency_increment = latency if count_execution else 0.0
     snapshot_name = workflow_name_snapshot or "Untitled workflow"
 
     stmt = insert(WorkflowAnalyticsSnapshot).values(
@@ -134,31 +138,101 @@ async def upsert_workflow_analytics_snapshot(
         owner_id=owner_id,
         workflow_name_snapshot=snapshot_name,
         bucket_start=bucket_start,
-        total_executions=1,
+        total_executions=exec_increment,
         success_count=is_success,
         error_count=is_error,
-        latency_sample_count=has_latency,
-        total_latency_ms=latency,
-        max_latency_ms=latency,
+        latency_sample_count=latency_sample_increment,
+        total_latency_ms=latency_increment,
+        max_latency_ms=latency_increment,
         last_run_at=run_at,
     )
     stmt = stmt.on_conflict_do_update(
         constraint="uq_workflow_analytics_snapshot_scope",
         set_={
             "workflow_name_snapshot": snapshot_name,
-            "total_executions": WorkflowAnalyticsSnapshot.total_executions + 1,
+            "total_executions": WorkflowAnalyticsSnapshot.total_executions + exec_increment,
             "success_count": WorkflowAnalyticsSnapshot.success_count + is_success,
             "error_count": WorkflowAnalyticsSnapshot.error_count + is_error,
-            "latency_sample_count": WorkflowAnalyticsSnapshot.latency_sample_count + has_latency,
-            "total_latency_ms": WorkflowAnalyticsSnapshot.total_latency_ms + latency,
-            "max_latency_ms": WorkflowAnalyticsSnapshot.max_latency_ms
-            if latency <= 0
-            else func.greatest(WorkflowAnalyticsSnapshot.max_latency_ms, latency),
+            "latency_sample_count": WorkflowAnalyticsSnapshot.latency_sample_count
+            + latency_sample_increment,
+            "total_latency_ms": WorkflowAnalyticsSnapshot.total_latency_ms + latency_increment,
+            "max_latency_ms": (
+                func.greatest(WorkflowAnalyticsSnapshot.max_latency_ms, latency)
+                if (count_execution and latency > 0)
+                else WorkflowAnalyticsSnapshot.max_latency_ms
+            ),
             "last_run_at": run_at,
             "updated_at": datetime.now(timezone.utc),
         },
     )
     await db.execute(stmt)
+
+
+async def resolve_execution_analytics_bucket(
+    db: AsyncSession,
+    *,
+    workflow_id: uuid.UUID | None,
+    owner_id: uuid.UUID | None,
+    candidate_time: datetime | None = None,
+    snapshot: dict | None = None,
+    history_started_at: datetime | None = None,
+    is_already_counted: bool = True,
+) -> datetime | None:
+    """Resolve the canonical, stable analytics bucket timestamp for an execution.
+
+    For executions that were already counted at pause time, the final outcome must
+    land in the EXACT bucket where the execution was originally counted, even across
+    multiple approval pauses, cross-hour resumes, or DB vs app clock mismatches.
+
+    If an already-counted execution lacks reliable bucket metadata (legacy run),
+    returns None so callers preserve main's analytics behavior rather than guessing
+    and potentially corrupting an existing bucket.
+    """
+    if not is_already_counted:
+        return history_started_at or candidate_time or datetime.now(timezone.utc)
+
+    initial_time: datetime | None = None
+    has_snapshot_bucket = False
+    if snapshot and isinstance(snapshot, dict):
+        raw = snapshot.get("analytics_bucket_time") or snapshot.get("analytics_bucket_start")
+        if raw:
+            if isinstance(raw, datetime):
+                initial_time = raw
+                has_snapshot_bucket = True
+            elif isinstance(raw, str):
+                try:
+                    initial_time = datetime.fromisoformat(raw)
+                    has_snapshot_bucket = True
+                except (ValueError, TypeError):
+                    initial_time = None
+
+    # For already-counted runs, if the snapshot lacks reliable bucket metadata,
+    # the original bucket is not known. Preserve main's behavior by returning None.
+    if not has_snapshot_bucket:
+        return None
+
+    if workflow_id is None:
+        return initial_time
+
+    def _to_utc(dt: datetime) -> datetime:
+        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    target_bucket = normalize_bucket_start(initial_time)
+    t_utc = _to_utc(target_bucket)
+
+    where_clauses = [WorkflowAnalyticsSnapshot.workflow_id == workflow_id]
+    if owner_id is None:
+        where_clauses.append(WorkflowAnalyticsSnapshot.owner_id.is_(None))
+    else:
+        where_clauses.append(WorkflowAnalyticsSnapshot.owner_id == owner_id)
+    stmt = select(WorkflowAnalyticsSnapshot.bucket_start).where(*where_clauses)
+    raw_buckets = (await db.execute(stmt)).scalars().all()
+    bucket_map = {_to_utc(b): b for b in raw_buckets}
+
+    if t_utc in bucket_map:
+        return bucket_map[t_utc]
+
+    return target_bucket
 
 
 def _bucket_by_size(dt: datetime, bucket_delta: timedelta) -> datetime:
