@@ -24,7 +24,7 @@ and workflow runs.
 - Columns are fully editable: add, rename, recolor, reorder, or delete them from the
   column settings (a column must be empty before it can be deleted).
 - Cards are ordered vertically by priority — drag to reorder.
-- You can also create a card from the [Chat tab](/docs/tabs/chat-tab) with a natural-language
+- You can also create a card from the [Chat tab](./chat-tab.md) with a natural-language
   request. Chat asks you to select a board when needed and always adds the card to that
   board's first column.
 
@@ -46,7 +46,7 @@ Model, so collaborators never need their own.
 
 Open a card and use **Attach file** to add files to it — drop them on the box or pick them
 with the button, and remove them from the same list. Attachments are stored in
-[Drive](/docs/tabs/drive-tab).
+[Drive](./drive-tab.md).
 
 Every run **resolves the attachments before the workflows start**, by type:
 
@@ -74,7 +74,7 @@ When a card moves into a column that has a chain:
    the card pulses **amber**; a run paused for human review shows a static amber
    state.
 
-Runs are recorded in [Execution History](/docs/reference/execution-history) with the
+Runs are recorded in [Execution History](../reference/execution-history.md) with the
 `board` trigger source, and each card keeps its own run list with per-workflow
 outputs and errors. Open a card while a workflow is running and choose **Open live** beside
 the run to attach the editor to that exact execution. The same canvas animation, incremental
@@ -83,7 +83,7 @@ Debug logs, and final result appear without starting a second run.
 ## What workflows receive
 
 The chain passes a standard payload as the workflow's input. Read it with normal
-[expressions](/docs/reference/expression-dsl) such as `$input.card.title`:
+[expressions](../reference/expression-dsl.md) such as `$input.card.title`:
 
 ```json
 {
@@ -137,8 +137,8 @@ is the gate. A card can only have one active run at a time.
 
 ## Human-in-the-loop and Codex questions
 
-If a chain workflow pauses — on a [Human-in-the-Loop](/docs/reference/human-in-the-loop)
-node, on an agent's HITL tool, or because a [Codex](/docs/nodes/codex-node) node needs
+If a chain workflow pauses — on a [Human-in-the-Loop](../reference/human-in-the-loop.md)
+node, on an agent's HITL tool, or because a [Codex](../nodes/codex-node.md) node needs
 more information — the run is persisted as pending and the card shows the amber pending
 state. Each pause keeps its own answer surface: a HITL review link for HITL, the Codex
 follow-up screen for Codex.
@@ -149,7 +149,7 @@ If the resumed run fails, the card turns red and the remaining links are skipped
 
 ## Related
 
-- [Workflows](/docs/tabs/workflows-tab)
-- [Execution History](/docs/reference/execution-history)
-- [Expression DSL](/docs/reference/expression-dsl)
-- [Human-in-the-Loop](/docs/reference/human-in-the-loop)
+- [Workflows](./workflows-tab.md)
+- [Execution History](../reference/execution-history.md)
+- [Expression DSL](../reference/expression-dsl.md)
+- [Human-in-the-Loop](../reference/human-in-the-loop.md)
