@@ -9,12 +9,18 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
+from app.api.analytics import (
+    resolve_execution_analytics_bucket,
+    upsert_workflow_analytics_snapshot,
+)
 from app.db.models import CodexFollowupRequest, ExecutionHistory, Workflow
 from app.db.session import async_session_maker
 from app.services.hitl_service import build_default_public_base_url
 from app.services.workflow_executor import (
     ExecutionResult,
+    _to_json_compatible,
     execute_hitl_notification_branch,
     resume_workflow_execution,
 )
@@ -144,7 +150,11 @@ async def persist_pending_codex_followup_execution(
     snapshot["public_base_url"] = public_base_url
     snapshot["hitl_resume_mode"] = "rerun_agent"
 
+    has_known_bucket = bool(
+        snapshot.get("analytics_bucket_time") or snapshot.get("analytics_bucket_start")
+    )
     if history_entry is None:
+        first_pause_at = datetime.now(timezone.utc)
         history_entry = ExecutionHistory(
             **({"id": history_entry_id} if history_entry_id is not None else {}),
             workflow_id=workflow.id,
@@ -154,8 +164,51 @@ async def persist_pending_codex_followup_execution(
             status="pending",
             execution_time_ms=execution_result.execution_time_ms,
             trigger_source=trigger_source,
+            started_at=first_pause_at,
         )
         db.add(history_entry)
+        bucket_time_raw = (
+            snapshot.get("analytics_bucket_time")
+            or snapshot.get("analytics_bucket_start")
+            or first_pause_at.isoformat()
+        )
+        bucket_time_str = (
+            bucket_time_raw
+            if isinstance(bucket_time_raw, str)
+            else (
+                bucket_time_raw.isoformat()
+                if hasattr(bucket_time_raw, "isoformat")
+                else str(bucket_time_raw)
+            )
+        )
+        snapshot["analytics_bucket_time"] = bucket_time_str
+        if isinstance(execution_result.resume_snapshot, dict):
+            execution_result.resume_snapshot["analytics_bucket_time"] = bucket_time_str
+    else:
+        if history_entry.started_at is None:
+            history_entry.started_at = datetime.now(timezone.utc)
+        if has_known_bucket:
+            bucket_time_raw = snapshot.get("analytics_bucket_time") or snapshot.get(
+                "analytics_bucket_start"
+            )
+            bucket_time_str = (
+                bucket_time_raw
+                if isinstance(bucket_time_raw, str)
+                else (
+                    bucket_time_raw.isoformat()
+                    if hasattr(bucket_time_raw, "isoformat")
+                    else str(bucket_time_raw)
+                )
+            )
+            snapshot["analytics_bucket_time"] = bucket_time_str
+            if isinstance(execution_result.resume_snapshot, dict):
+                execution_result.resume_snapshot["analytics_bucket_time"] = bucket_time_str
+        else:
+            snapshot.pop("analytics_bucket_time", None)
+            snapshot.pop("analytics_bucket_start", None)
+            if isinstance(execution_result.resume_snapshot, dict):
+                execution_result.resume_snapshot.pop("analytics_bucket_time", None)
+                execution_result.resume_snapshot.pop("analytics_bucket_start", None)
 
     history_entry.status = "pending"
     history_entry.inputs = enriched_inputs
@@ -223,9 +276,13 @@ async def persist_pending_codex_followup_execution(
             "trigger_source",
             "public_base_url",
             "hitl_resume_mode",
+            "analytics_bucket_time",
         ):
             if key in snapshot:
                 merged_snapshot[key] = copy.deepcopy(snapshot[key])
+            elif key == "analytics_bucket_time":
+                merged_snapshot.pop(key, None)
+        merged_snapshot.pop("analytics_bucket_start", None)
         execution_result.resume_snapshot = merged_snapshot
         followup.execution_snapshot = copy.deepcopy(merged_snapshot)
     execution_result.execution_time_ms += float(
@@ -267,31 +324,46 @@ async def resume_codex_followup_in_background(request_id: uuid.UUID) -> None:
 
         snapshot = copy.deepcopy(followup.execution_snapshot or {})
         credentials_owner_value = snapshot.get("credentials_owner_id")
-        if not credentials_owner_value:
-            followup.resume_error = "Missing credentials_owner_id in Codex snapshot"
-            await db.commit()
-            return
-
-        credentials_owner_id = uuid.UUID(str(credentials_owner_value))
-        trace_user_value = snapshot.get("trace_user_id")
-        trace_user_id = uuid.UUID(str(trace_user_value)) if trace_user_value else None
-        # Re-derived, never from the snapshot: pre-fix rows can carry a spoofed host.
-        public_base_url = build_default_public_base_url()
         trigger_source = snapshot.get("trigger_source")
-        resolved_output = build_codex_answer_output(followup)
-        followup.resolved_output = copy.deepcopy(resolved_output)
-        followup.resume_error = None
-
-        from app.api.workflows import (
-            _persist_global_variables_from_execution,
-            get_credentials_context,
+        effective_trigger_source = trigger_source or history_entry.trigger_source
+        is_already_counted = effective_trigger_source not in ("board", "portal")
+        has_known_bucket = bool(
+            snapshot
+            and isinstance(snapshot, dict)
+            and (snapshot.get("analytics_bucket_time") or snapshot.get("analytics_bucket_start"))
         )
-        from app.services.global_variables_service import get_global_variables_context
-
-        credentials_context = await get_credentials_context(db, credentials_owner_id)
-        global_variables_context = await get_global_variables_context(db, credentials_owner_id)
-
         try:
+            analytics_bucket_time = await resolve_execution_analytics_bucket(
+                db,
+                workflow_id=workflow.id,
+                owner_id=workflow.owner_id,
+                candidate_time=followup.created_at,
+                snapshot=snapshot,
+                history_started_at=history_entry.started_at,
+                is_already_counted=is_already_counted,
+            )
+
+            if not credentials_owner_value:
+                raise ValueError("Missing credentials_owner_id in Codex snapshot")
+
+            credentials_owner_id = uuid.UUID(str(credentials_owner_value))
+            trace_user_value = snapshot.get("trace_user_id")
+            trace_user_id = uuid.UUID(str(trace_user_value)) if trace_user_value else None
+            # Re-derived, never from the snapshot: pre-fix rows can carry a spoofed host.
+            public_base_url = build_default_public_base_url()
+            resolved_output = build_codex_answer_output(followup)
+            followup.resolved_output = copy.deepcopy(resolved_output)
+            followup.resume_error = None
+
+            from app.api.workflows import (
+                _persist_global_variables_from_execution,
+                get_credentials_context,
+            )
+            from app.services.global_variables_service import get_global_variables_context
+
+            credentials_context = await get_credentials_context(db, credentials_owner_id)
+            global_variables_context = await get_global_variables_context(db, credentials_owner_id)
+
             resumed_result = await asyncio.to_thread(
                 resume_workflow_execution,
                 snapshot=snapshot,
@@ -300,60 +372,151 @@ async def resume_codex_followup_in_background(request_id: uuid.UUID) -> None:
                 global_variables_context=global_variables_context,
                 trace_user_id=trace_user_id,
             )
+
+            if resumed_result.status == "pending":
+                if isinstance(resumed_result.resume_snapshot, dict):
+                    if (
+                        "analytics_bucket_time" in snapshot
+                        and "analytics_bucket_time" not in resumed_result.resume_snapshot
+                    ):
+                        resumed_result.resume_snapshot["analytics_bucket_time"] = snapshot[
+                            "analytics_bucket_time"
+                        ]
+                    elif (
+                        "analytics_bucket_start" in snapshot
+                        and "analytics_bucket_start" not in resumed_result.resume_snapshot
+                        and "analytics_bucket_time" not in resumed_result.resume_snapshot
+                    ):
+                        resumed_result.resume_snapshot["analytics_bucket_start"] = snapshot[
+                            "analytics_bucket_start"
+                        ]
+                    else:
+                        resumed_result.resume_snapshot.pop("analytics_bucket_time", None)
+                        resumed_result.resume_snapshot.pop("analytics_bucket_start", None)
+
+                if is_codex_pending_execution(resumed_result):
+                    await persist_pending_codex_followup_execution(
+                        db=db,
+                        workflow=workflow,
+                        enriched_inputs=history_entry.inputs,
+                        execution_result=resumed_result,
+                        trigger_source=trigger_source,
+                        credentials_owner_id=credentials_owner_id,
+                        trace_user_id=trace_user_id,
+                        public_base_url=public_base_url,
+                        history_entry=history_entry,
+                    )
+                else:
+                    from app.services.hitl_service import persist_pending_hitl_execution
+
+                    await persist_pending_hitl_execution(
+                        db=db,
+                        workflow=workflow,
+                        enriched_inputs=history_entry.inputs,
+                        execution_result=resumed_result,
+                        trigger_source=trigger_source,
+                        credentials_owner_id=credentials_owner_id,
+                        trace_user_id=trace_user_id,
+                        public_base_url=public_base_url,
+                        history_entry=history_entry,
+                    )
+                await db.commit()
+                return
+
+            if getattr(resumed_result, "allow_downstream_pending", False):
+                await asyncio.to_thread(resumed_result.join_allow_downstream)
+                if any(
+                    isinstance(node_result, dict)
+                    and node_result.get("status") == "error"
+                    and node_result.get("metadata", {}).get("retry_stage") != "attempt_failed"
+                    for node_result in (getattr(resumed_result, "node_results", None) or [])
+                ):
+                    resumed_result.status = "error"
+
+            history_entry.status = resumed_result.status
+            history_entry.outputs = _to_json_compatible(resumed_result.outputs)
+            history_entry.node_results = _to_json_compatible(resumed_result.node_results)
+            history_entry.execution_time_ms = resumed_result.execution_time_ms
+            flag_modified(history_entry, "outputs")
+            flag_modified(history_entry, "node_results")
+
+            for sub_exec in resumed_result.sub_workflow_executions:
+                sub_history = ExecutionHistory(
+                    workflow_id=uuid.UUID(str(sub_exec.workflow_id)),
+                    inputs=_to_json_compatible(sub_exec.inputs),
+                    outputs=_to_json_compatible(sub_exec.outputs),
+                    node_results=_to_json_compatible(sub_exec.node_results),
+                    status=sub_exec.status,
+                    execution_time_ms=sub_exec.execution_time_ms,
+                    trigger_source=sub_exec.trigger_source,
+                )
+                db.add(sub_history)
+                await upsert_workflow_analytics_snapshot(
+                    db,
+                    workflow_id=uuid.UUID(str(sub_exec.workflow_id)),
+                    owner_id=None,
+                    workflow_name_snapshot=sub_exec.workflow_name or "Sub-workflow",
+                    status=sub_exec.status,
+                    execution_time_ms=sub_exec.execution_time_ms,
+                )
+
+            await _persist_global_variables_from_execution(
+                db,
+                credentials_owner_id,
+                snapshot.get("nodes") or [],
+                snapshot.get("workflow_cache") or {},
+                resumed_result.node_results,
+                resumed_result.sub_workflow_executions,
+            )
+            if analytics_bucket_time is not None:
+                await upsert_workflow_analytics_snapshot(
+                    db,
+                    workflow_id=workflow.id,
+                    owner_id=workflow.owner_id,
+                    workflow_name_snapshot=workflow.name,
+                    status=resumed_result.status,
+                    execution_time_ms=resumed_result.execution_time_ms,
+                    started_at=analytics_bucket_time,
+                    count_execution=not is_already_counted,
+                )
+            await db.commit()
+            await _resume_board_chain(history_entry.id)
         except Exception as exc:
+            bucket_to_use = locals().get("analytics_bucket_time")
+            if bucket_to_use is None and has_known_bucket:
+                raw = snapshot.get("analytics_bucket_time") or snapshot.get(
+                    "analytics_bucket_start"
+                )
+                if isinstance(raw, datetime):
+                    bucket_to_use = raw
+                elif isinstance(raw, str):
+                    try:
+                        bucket_to_use = datetime.fromisoformat(raw)
+                    except (ValueError, TypeError):
+                        bucket_to_use = None
+            if bucket_to_use is None and not is_already_counted:
+                bucket_to_use = (
+                    history_entry.started_at or followup.created_at or datetime.now(timezone.utc)
+                )
             followup.resume_error = str(exc)
             history_entry.status = "error"
             history_entry.outputs = {"error": str(exc)}
             history_entry.execution_time_ms = 0
+            flag_modified(history_entry, "outputs")
+            if bucket_to_use is not None:
+                await upsert_workflow_analytics_snapshot(
+                    db,
+                    workflow_id=workflow.id,
+                    owner_id=workflow.owner_id,
+                    workflow_name_snapshot=workflow.name,
+                    status="error",
+                    execution_time_ms=0.0,
+                    started_at=bucket_to_use,
+                    count_execution=not is_already_counted,
+                )
             await db.commit()
             await _resume_board_chain(history_entry.id)
             return
-
-        if resumed_result.status == "pending":
-            if is_codex_pending_execution(resumed_result):
-                await persist_pending_codex_followup_execution(
-                    db=db,
-                    workflow=workflow,
-                    enriched_inputs=history_entry.inputs,
-                    execution_result=resumed_result,
-                    trigger_source=trigger_source,
-                    credentials_owner_id=credentials_owner_id,
-                    trace_user_id=trace_user_id,
-                    public_base_url=public_base_url,
-                    history_entry=history_entry,
-                )
-            else:
-                from app.services.hitl_service import persist_pending_hitl_execution
-
-                await persist_pending_hitl_execution(
-                    db=db,
-                    workflow=workflow,
-                    enriched_inputs=history_entry.inputs,
-                    execution_result=resumed_result,
-                    trigger_source=trigger_source,
-                    credentials_owner_id=credentials_owner_id,
-                    trace_user_id=trace_user_id,
-                    public_base_url=public_base_url,
-                    history_entry=history_entry,
-                )
-            await db.commit()
-            return
-
-        history_entry.status = resumed_result.status
-        history_entry.outputs = copy.deepcopy(resumed_result.outputs)
-        history_entry.node_results = copy.deepcopy(resumed_result.node_results)
-        history_entry.execution_time_ms = resumed_result.execution_time_ms
-
-        await _persist_global_variables_from_execution(
-            db,
-            credentials_owner_id,
-            snapshot.get("nodes") or [],
-            snapshot.get("workflow_cache") or {},
-            resumed_result.node_results,
-            resumed_result.sub_workflow_executions,
-        )
-        await db.commit()
-        await _resume_board_chain(history_entry.id)
 
 
 async def _resume_board_chain(execution_history_id: uuid.UUID) -> None:

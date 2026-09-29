@@ -3186,6 +3186,7 @@ async def execute_workflow_endpoint(
             workflow_name_snapshot=workflow.name,
             status=execution_result.status,
             execution_time_ms=execution_result.execution_time_ms,
+            started_at=getattr(history_entry, "started_at", None),
         )
         await db.flush()
         if simple_response:
@@ -4044,6 +4045,7 @@ async def execute_workflow_stream(
                             workflow_name_snapshot=workflow.name,
                             status="pending",
                             execution_time_ms=pending_result.execution_time_ms,
+                            started_at=getattr(history_entry, "started_at", None),
                         )
                         event["outputs"] = pending_result.outputs
                         event["node_results"] = pending_result.node_results
@@ -4120,6 +4122,7 @@ async def execute_workflow_stream(
                                     workflow_name_snapshot=workflow.name,
                                     status="pending",
                                     execution_time_ms=pending_result.execution_time_ms,
+                                    started_at=getattr(history_entry, "started_at", None),
                                 )
                                 event["outputs"] = pending_result.outputs
                                 event["node_results"] = pending_result.node_results

@@ -390,7 +390,7 @@ Pairs with [Set](../nodes/set-node.md), [Output](../nodes/output-node.md), [Work
 
 #### [Chart Output](../nodes/chart-output-node.md)
 
-The Chart Output node is the terminal node of a [Dashboard](../tabs/dashboard-tab.md) widget workflow. It turns the rows produced by upstream nodes into a standardized chart payload that the dashboard renders. Choose a `chartType` (bar, line, area, pie, table, numeric, gauge, scatter, proportion, bar gauge, or text), map `labelField`/`valueField` (or `series` for multi-series, or `text` for a markdown message), and place it last; it has no output edge.
+The Chart Output node is the terminal node of a [Dashboard](../tabs/dashboard-tab.md) widget workflow. It turns the rows produced by upstream nodes into a standardized chart payload that the dashboard renders. Choose a `chartType` (bar, line, area, pie, table, numeric, gauge, scatter, proportion, bar gauge, text, or HITL), map `labelField`/`valueField` (or `series` for multi-series, or `text` for a markdown message), and place it last; it has no output edge. HITL ignores upstream rows and lists your pending human reviews.
 
 See also [Dashboard](../tabs/dashboard-tab.md), [Set](../nodes/set-node.md), and [Output](../nodes/output-node.md).
 
@@ -478,6 +478,10 @@ See also [Canvas Features](./canvas-features.md), [Quick Drawer](./quick-drawer.
 ### [AI Assistant](./ai-assistant.md)
 
 The AI Assistant is a chat panel opened from the Debug panel that lets you create or modify workflows with natural language. Select a [credential](./credentials.md) and model, then describe what you want; the AI streams a response and any valid [workflow JSON](./workflow-structure.md) in a code block is automatically parsed and applied to the canvas. Voice input is supported on compatible browsers.
+
+Turn on **YOLO mode** (Agent mode, off by default) and the assistant tests what it builds. After each change it runs the workflow on the canvas, reads the result and fixes the workflow until it does what you asked, for up to 5 runs per message. It asks for test inputs before the first run, can run your other workflows when it needs their result, and shows each step as it works. See [AI Assistant › YOLO Mode](./ai-assistant.md#yolo-mode).
+
+When a workflow stores records, the assistant asks which [data table](../tabs/datatable-tab.md) to use, or creates one with the columns the workflow needs. See [AI Assistant › Data tables](./ai-assistant.md#data-tables).
 
 When the current workflow contains [Agent Node](../nodes/agent-node.md) skills, the assistant sends only each skill's `SKILL.md` into the workflow context. Attached `.py` files and binary skill assets are excluded before the request so large skill bundles do not overflow the model context window.
 
@@ -601,7 +605,7 @@ Each workflow can set a **workflow timeout** in seconds in the workflow-level **
 
 ### Time Saved
 
-Each workflow can record an **estimated time saved per run** (in minutes), set in the workflow-level **Properties** panel. The [Analytics](../tabs/analytics-tab.md) tab aggregates this across the selected range as a total **Time Saved** stat (sum of each workflow's estimate × its successful runs). The [Workflow Analysis](./workflow-analysis.md) report recommends setting an estimate when none is configured.
+Each workflow can record an **estimated time saved per run** (in minutes), set in the workflow-level **Properties** panel. The [Analytics](../tabs/analytics-tab.md) tab aggregates this across the selected range as a total **Time Saved** stat (sum of each workflow's estimate × its successful runs). Most Used also lists that sum per workflow; **Not Set** opens the estimate field when it is unset. The [Workflow Analysis](./workflow-analysis.md) report recommends setting an estimate when none is configured.
 
 ### [Settings](./user-settings.md)
 
@@ -796,7 +800,7 @@ See also [Analytics](../tabs/analytics-tab.md), [Traces](../tabs/traces-tab.md),
 
 ### [Analytics](../tabs/analytics-tab.md)
 
-The Analytics tab shows execution metrics and trends. Summary stats include total executions, success rate, error rate, latency breakdowns, and total **Time Saved** (from each workflow's estimated minutes saved per run × its successful runs). Select a base time range (24h, 7d, 30d, or all), optionally filter by workflow, then drag across any chart to drill into a selected date range. Charts and workflow tables refresh to the selection, and auto refresh keeps metrics updated. It complements [Execution History](./execution-history.md) and the [Scheduled](../tabs/scheduled-tab.md) view when you need both past results and upcoming runs.
+The Analytics tab shows execution metrics and trends. Summary stats include total executions, success rate, error rate, latency breakdowns, and total **Time Saved** (the sum of each workflow's estimated minutes saved per run × its successful runs). Most Used lists that same sum per workflow. Select a base time range (24h, 7d, 30d, or all), optionally filter by workflow, then drag across any chart to drill into a selected date range. Charts and workflow tables refresh to the selection, and auto refresh keeps metrics updated. It complements [Execution History](./execution-history.md) and the [Scheduled](../tabs/scheduled-tab.md) view when you need both past results and upcoming runs.
 
 See also [Execution History](./execution-history.md), [Scheduled](../tabs/scheduled-tab.md), and [Evals](../tabs/evals-tab.md).
 
@@ -805,7 +809,7 @@ See also [Execution History](./execution-history.md), [Scheduled](../tabs/schedu
 
 ### [Dashboard](../tabs/dashboard-tab.md)
 
-The Dashboard tab is a Grafana-style space where you build grids of chart widgets, each rendered from its own hidden Heym workflow. Keep as many dashboards as you need and share each one with users or teams, read-only or editable; widgets always run with the owner's credentials, so everyone sees the same data. Describe a metric in plain language and the AI generates the widget, or add one manually and pick a chart type, previewed with sample data: bar, line, area, pie, table, numeric, gauge, scatter, proportion, bar gauge, or text. Widgets cache their results, can be fine-tuned with AI (each change is saved to [Edit History](./edit-history.md)), cloned together with their complete workflow, rearranged with Tidy up, and dragged or resized in edit mode. Because each widget is a workflow, any data you can fetch — an [HTTP](../nodes/http-node.md) call, a [BigQuery](../nodes/bigquery-node.md) query, a [RAG](../nodes/rag-node.md) lookup, or [LLM](../nodes/llm-node.md) output — can become a chart.
+The Dashboard tab is a Grafana-style space where you build grids of chart widgets, each rendered from its own hidden Heym workflow. Keep as many dashboards as you need and share each one with users or teams, read-only or editable; widgets always run with the owner's credentials, so everyone sees the same data. Describe a metric in plain language and the AI generates the widget, or add one manually and pick a chart type, previewed with sample data: bar, line, area, pie, table, numeric, gauge, scatter, proportion, bar gauge, text, or HITL. HITL is a carousel of your pending human reviews. The header shows `1/n pending`. The workflow name opens that run on the canvas. **Approve**, **Request changes**, and **Reject** resolve it, and the history icon beside the widget title opens that run in the history dialog on the same page. Widgets cache their results, can be fine-tuned with AI (each change is saved to [Edit History](./edit-history.md)), cloned together with their complete workflow, rearranged with Tidy up, and dragged or resized in edit mode. Because each widget is a workflow, any data you can fetch — an [HTTP](../nodes/http-node.md) call, a [BigQuery](../nodes/bigquery-node.md) query, a [RAG](../nodes/rag-node.md) lookup, or [LLM](../nodes/llm-node.md) output — can become a chart.
 
 See also [Chart Output node](../nodes/chart-output-node.md), [Analytics](../tabs/analytics-tab.md), and [Execution History](./execution-history.md).
 

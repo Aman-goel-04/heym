@@ -71,10 +71,11 @@ const errorWorkflowOptions = computed(() =>
           <span class="text-sm font-medium">Time saved per run (min)</span>
         </div>
         <input
+          id="workflow-minutes-saved"
           type="number"
           min="0"
           step="1"
-          class="w-full text-sm rounded-md border border-border bg-background px-2 py-1.5 disabled:opacity-50"
+          class="w-full text-sm rounded-md border border-border bg-background px-2 py-1.5 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-primary"
           :value="minutesSavedPerRun ?? ''"
           :disabled="!isWorkflowOwner"
           placeholder="e.g. 15"

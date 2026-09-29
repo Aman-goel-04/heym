@@ -3698,7 +3698,7 @@ Access the saved file downstream: `$saveAudio.id`, `$saveAudio.download_url`
   `[{"month": "Jan", "revenue": 120}, ...]`).
 - **Data fields**:
   - `label`: Node identifier (camelCase)
-  - `chartType`: `"pie"` | `"bar"` | `"line"` | `"area"` | `"table"` | `"numeric"` | `"gauge"` | `"scatter"` | `"proportion"` | `"barGauge"` | `"text"` (required)
+  - `chartType`: `"pie"` | `"bar"` | `"line"` | `"area"` | `"table"` | `"numeric"` | `"gauge"` | `"scatter"` | `"proportion"` | `"barGauge"` | `"text"` | `"hitl"` (required)
   - `orientation`: `"horizontal"` | `"vertical"` (bar only, default `"vertical"`)
   - `dataPath`: optional dot path to the rows array inside the upstream output (e.g. `"data"` or `"result.items"`)
   - `labelField`: row key used as the category label (pie/bar/line)
@@ -3802,6 +3802,14 @@ syntax (`- [ ]` / `- [x]`) in `text` — do not use plain bullets for checkbox i
 Text checklist (three items, one checked — put markdown in `text` so dashboard toggles persist):
 ```json
 {"type": "chartOutput", "data": {"label": "todoList", "chartType": "text", "text": "- [x] Option 1\\n- [ ] Option 2\\n- [ ] Option 3", "title": "Tasks"}}
+```
+
+**HITL inbox (`chartType: "hitl"`):** a dashboard carousel of the signed-in user's pending human
+reviews. It needs no upstream rows and no `dataPath`. The header shows `1/n pending`. The workflow
+name opens that run on the canvas. Each card has approve, request changes, and reject. The history
+icon beside the widget title opens that run in the history dialog on the same page.
+```json
+{"type": "chartOutput", "data": {"label": "reviews", "chartType": "hitl"}}
 ```
 
 **Numbered text lists (including descending):** prefix each line with the explicit number to
@@ -5304,6 +5312,16 @@ Rules for the clarify block:
 - A `single` question can offer to update an existing credential with an option
   `{"label": "...", "edit": {"id": "<credential id>"}}`. The form opens with that credential
   loaded, and the answer comes back as `Updated credential "<name>" (<type>)`.
+- A `single` question can offer an existing Heym data table with an option
+  `{"label": "...", "table": {"id": "<table id>"}}`. The card shows the table's description
+  and columns, and the answer comes back as `Data table "<name>" (id <id>)`.
+- A `single` question can offer a new Heym data table with an option
+  `{"label": "...", "createTable": {"name": "<table name>", "description": "<one line>",
+  "columns": [{"name": "<lower_snake_case>", "type": "string", "unique": true}]}}`. Column
+  types are `string`, `number`, `boolean`, `date` or `json`; `unique` and `required` are
+  optional. Never add `id` or `created_at` columns: every row already has them. The name
+  must differ from the user's existing table names. The card creates the table when the user
+  submits, and the answer comes back as `Created data table "<name>" (id <id>)`.
 - Set `"optional": true` on a question the workflow can be built without. Its input says
   "Optional", the user may skip it, and a skipped question comes back as `(skipped)`.
 
@@ -5322,6 +5340,56 @@ The user will reply with a message that starts with `[Plan answers]` listing the
 choices. After reading it: if the request is now clear, generate the workflow JSON as
 usual; if it is still ambiguous, you may emit one more `heym-clarify` block. For requests
 that are already clear, skip this protocol entirely and generate the workflow directly.
+"""
+
+
+YOLO_PROTOCOL_PROMPT = """
+
+## YOLO Mode (test-and-fix loop)
+
+YOLO mode is on. After each of your answers the editor runs the workflow on the canvas
+and sends you the result, so you can check your work and fix it until the workflow does
+what the user asked.
+
+End every response, except one that asks the user with a `heym-clarify` block, with
+exactly one fenced block tagged `heym-yolo` holding one JSON object, placed after any
+workflow JSON block:
+
+- To test the workflow on the canvas now:
+
+  ```heym-yolo
+  {"action": "run", "inputs": {"text": "A realistic sample input"}, "expect": "What a successful run returns"}
+  ```
+
+  `inputs` holds test values keyed by the workflow's input field keys (for a generic
+  webhook body, the whole JSON body). Include `inputs` only for the first run, when the
+  input fields change, or when checking the request needs different test data; omit it
+  to reuse the current inputs. The user confirms new inputs before the run. `expect` is
+  one sentence describing a successful run.
+
+- When the latest run shows that the request is fully satisfied:
+
+  ```heym-yolo
+  {"action": "done", "summary": "One or two sentences on what the latest run proved."}
+  ```
+
+Rules:
+- Every workflow JSON block you send is applied and run before the loop can finish, so
+  answer `done` only in a response without a workflow JSON block.
+- A message starting with `[YOLO run report]` reports the latest run. Its execution log
+  is in the "Latest Workflow Execution Log" section. Compare it with the user's original
+  request before you answer.
+- Never answer `done` when the latest run failed or returned the wrong output, unless
+  that failure is exactly what the user asked for.
+- To fix the workflow, change only what the log shows is wrong, and return the complete
+  workflow JSON (all nodes and edges).
+- When you cannot continue without the user (missing information, a credential to create
+  or update, a data table to pick or create, a decision), use a `heym-clarify` block. The
+  loop resumes after the answers.
+- The `execute_workflow` tool runs one of the workflows listed under "Available Workflows
+  for Execute Node", for example to see what a workflow returns before calling it from an
+  execute node. Runs are real, so call it only when the result matters for the task.
+  Never call it for the workflow you are editing; test that one with a `run` block.
 """
 
 
@@ -5354,6 +5422,7 @@ def build_assistant_prompt(
     available_node_templates: list[dict] | None = None,
     installed_plugins: list[dict] | None = None,
     credentials_prompt: str = "",
+    data_tables_prompt: str = "",
 ) -> str:
     import json
 
@@ -5509,6 +5578,7 @@ def build_assistant_prompt(
                     prompt += f"    config fields: {field_list}\n"
 
     prompt += credentials_prompt
+    prompt += data_tables_prompt
     prompt += CLARIFY_PROTOCOL_PROMPT
 
     return prompt

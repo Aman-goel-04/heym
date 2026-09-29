@@ -1744,6 +1744,7 @@ class ExecutionResult:
     _credentials_context: dict[str, str] = field(default_factory=dict, repr=False)
     # Callers persist global variables from these rows, so their output stays as written.
     _global_variable_node_ids: frozenset[str] = field(default_factory=frozenset, repr=False)
+    _downstream_global_node_ids: frozenset[str] = field(default_factory=frozenset, repr=False)
 
     @property
     def allow_downstream_pending(self) -> bool:
@@ -2047,6 +2048,7 @@ class WorkflowExecutor:
         self._bg_futures: list = []
         self._bg_futures_lock = Lock()
         self.configured_timezone = configured_timezone or get_configured_timezone()
+        self._downstream_global_node_ids: frozenset[str] = frozenset()
         # Active OTel context (with the workflow root span) captured during execute();
         # re-attached inside worker threads so node spans nest under the workflow span.
         self._otel_root_context: object | None = None
@@ -3175,6 +3177,7 @@ class WorkflowExecutor:
             ),
             _started_at=start_time,
             _global_variable_node_ids=_collect_global_variable_node_ids(self.nodes),
+            _downstream_global_node_ids=getattr(self, "_downstream_global_node_ids", frozenset()),
         )
 
     def execute_node_parallel(
@@ -7643,6 +7646,7 @@ class WorkflowExecutor:
                 self.return_on_chart_output and node.get("type") == "chartOutput"
             ):
                 output_nodes_with_downstream.add(node_id)
+        self._downstream_global_node_ids = frozenset()
 
         def schedule_downstream(
             source_node_id: str, source_result: NodeResult | None = None
@@ -7795,6 +7799,9 @@ class WorkflowExecutor:
 
                 if node_id in output_nodes_with_downstream and result.status == "success":
                     early_return_output = {result.node_label: result.output}
+                    self._downstream_global_node_ids = _collect_downstream_global_node_ids(
+                        self, {node_id}, active_edges
+                    )
 
                 with pending_lock:
                     schedule_downstream(node_id, result)
@@ -8033,6 +8040,22 @@ def _collect_global_variable_node_ids(nodes: dict[str, dict]) -> frozenset[str]:
     )
 
 
+def _collect_downstream_global_node_ids(
+    executor: "WorkflowExecutor",
+    output_nodes_with_downstream: set[str],
+    active_edges: list[dict],
+) -> frozenset[str]:
+    """Collect global variable node IDs that are downstream of allowDownstream output nodes."""
+    if not output_nodes_with_downstream:
+        return frozenset()
+    downstream: set[str] = set()
+    for out_id in output_nodes_with_downstream:
+        for target in executor.get_downstream_nodes(out_id):
+            downstream.update(executor.get_branch_node_ids(target, active_edges))
+    all_globals = _collect_global_variable_node_ids(executor.nodes)
+    return frozenset(downstream & all_globals)
+
+
 def _mask_node_result_row(
     row: dict, credentials_context: dict[str, str], *, keep_output: bool = False
 ) -> None:
@@ -8138,9 +8161,11 @@ def execute_workflow(
 
     if credentials_context:
         result.outputs = mask_sensitive_output(result.outputs, credentials_context)
+        downstream_globals = getattr(result, "_downstream_global_node_ids", frozenset())
         for node_result in result.node_results:
             if isinstance(node_result, dict):
-                _mask_node_result_row(node_result, credentials_context)
+                keep_output = bool(node_result.get("node_id") in downstream_globals)
+                _mask_node_result_row(node_result, credentials_context, keep_output=keep_output)
         result._credentials_context = credentials_context
 
     return result
@@ -8369,6 +8394,7 @@ def resume_workflow_execution(
             and node.get("data", {}).get("allowDownstream")
         ):
             output_nodes_with_downstream.add(node_id)
+    wf_executor._downstream_global_node_ids = frozenset()
 
     def schedule_downstream(source_node_id: str, source_result: NodeResult | None = None) -> None:
         skip_source_handles = (
@@ -8479,6 +8505,8 @@ def resume_workflow_execution(
         else:
             schedule_downstream(paused_node_id)
 
+    allow_downstream_node_results: list[NodeResult] = []
+    allow_downstream_future: Future | None = None
     while (
         running_futures and not has_error and pending_result is None and early_return_output is None
     ):
@@ -8502,6 +8530,9 @@ def resume_workflow_execution(
 
             if node_id in output_nodes_with_downstream and result.status == "success":
                 early_return_output = {result.node_label: result.output}
+                wf_executor._downstream_global_node_ids = _collect_downstream_global_node_ids(
+                    wf_executor, {node_id}, active_edges
+                )
 
             with pending_lock:
                 schedule_downstream(node_id, result)
@@ -8515,6 +8546,9 @@ def resume_workflow_execution(
                         for future_bg in done_bg:
                             nid = remaining_futures.pop(future_bg)
                             res = future_bg.result()
+                            with pending_lock:
+                                node_results.append(res)
+                                allow_downstream_node_results.append(res)
                             skip_add_to_completed = False
                             if res.status == "success":
                                 with pending_lock:
@@ -8597,8 +8631,9 @@ def resume_workflow_execution(
                                                     remaining_futures[new_future] = tgt
                             if not skip_add_to_completed:
                                 completed_nodes.add(nid)
+                    wf_executor.drain_bg_futures()
 
-                _submit_allow_downstream_work(run_remaining_downstream)
+                allow_downstream_future = _submit_allow_downstream_work(run_remaining_downstream)
                 break
 
     if pending_result is not None:
@@ -8630,6 +8665,8 @@ def resume_workflow_execution(
             outputs=early_return_output,
             start_time=start_time,
             node_results=node_results,
+            allow_downstream_pending=[allow_downstream_future] if allow_downstream_future else None,
+            allow_downstream_node_results=allow_downstream_node_results,
         )
     elif has_error and error_result:
         error_flow_final_output = None
@@ -8679,9 +8716,12 @@ def resume_workflow_execution(
 
     if credentials_context:
         result.outputs = mask_sensitive_output(result.outputs, credentials_context)
+        downstream_globals = getattr(result, "_downstream_global_node_ids", frozenset())
         for node_result in result.node_results:
             if isinstance(node_result, dict):
-                _mask_node_result_row(node_result, credentials_context)
+                keep_output = bool(node_result.get("node_id") in downstream_globals)
+                _mask_node_result_row(node_result, credentials_context, keep_output=keep_output)
+        result._credentials_context = credentials_context
 
     return result
 

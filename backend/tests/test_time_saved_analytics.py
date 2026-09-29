@@ -1,7 +1,7 @@
 import unittest
 import uuid
 
-from app.api.analytics import compute_time_saved_minutes
+from app.api.analytics import compute_time_saved_minutes, time_saved_minutes_for_runs
 
 
 class TestComputeTimeSaved(unittest.TestCase):
@@ -20,6 +20,13 @@ class TestComputeTimeSaved(unittest.TestCase):
     def test_none_workflow_id_ignored(self) -> None:
         wid = uuid.uuid4()
         self.assertEqual(compute_time_saved_minutes({wid: 2, None: 99}, {wid: 4.0}), 8.0)
+
+    def test_per_workflow_sum_is_rate_times_successes(self) -> None:
+        self.assertEqual(time_saved_minutes_for_runs(10, 3.5), 35.0)
+
+    def test_per_workflow_missing_rate_is_unset(self) -> None:
+        self.assertIsNone(time_saved_minutes_for_runs(10, None))
+        self.assertIsNone(time_saved_minutes_for_runs(10, 0.0))
 
 
 if __name__ == "__main__":

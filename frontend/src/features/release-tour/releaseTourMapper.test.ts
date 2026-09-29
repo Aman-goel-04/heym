@@ -352,12 +352,29 @@ describe("shipped release registry", () => {
     const catalog = buildReleaseTourCatalog(RELEASE_REGISTRY);
 
     expect(catalog?.slides.map((slide) => slide.id)).toEqual([
+      "dashboard-hitl",
+      "assistant-data-tables",
+      "assistant-yolo-mode",
       "dashboard-sharing",
       "evals-judge",
-      "chat-credentials",
-      "model-router",
-      "decision-node",
     ]);
+  });
+
+  it("keeps only the five most recent sections", () => {
+    expect(RELEASE_REGISTRY.flatMap((entry) => entry.sections).length).toBeLessThanOrEqual(5);
+  });
+
+  it("registers a visual for every section, including unreleased ones", () => {
+    const tours = RELEASE_REGISTRY.flatMap((entry) => entry.sections).flatMap((section) =>
+      section.tour ? [section.tour] : [],
+    );
+
+    expect(tours.map((tour) => tour.tourVisual)).toContain("assistant-yolo-mode");
+    expect(tours.map((tour) => tour.tourVisual)).toContain("assistant-data-tables");
+    for (const tour of tours) {
+      expect(TOUR_VISUALS[tour.tourVisual], `missing visual for "${tour.tourVisual}"`)
+        .toBeDefined();
+    }
   });
 
   it("resolves every registry slide to a registered visual", () => {
