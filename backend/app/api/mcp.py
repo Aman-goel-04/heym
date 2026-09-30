@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.analytics import upsert_workflow_analytics_snapshot
@@ -72,7 +72,7 @@ from app.services.pending_execution import (
     persist_pending_execution,
 )
 from app.services.secret_tokens import hash_secret
-from app.services.workflow_access import explicit_workflow_share_ids, workflow_access_clause
+from app.services.workflow_access import workflow_access_clause
 
 router = APIRouter()
 T = TypeVar("T")
@@ -472,13 +472,29 @@ async def get_user_mcp_workflows(db: AsyncSession, user_id: uuid.UUID) -> list[W
 
 
 async def get_all_user_workflows(db: AsyncSession, user_id: uuid.UUID) -> list[Workflow]:
+    """Workflows eligible to appear in the MCP settings page.
+
+    A team member's only ``WorkflowShare`` row can be a folder-only placement (not an
+    explicit share), so gating on ``explicit_workflow_share_ids`` alone hid workflows they
+    can otherwise enable and run through MCP. Require a share row to exist (so there is
+    somewhere to persist the toggle) and re-verify current access through
+    ``workflow_access_clause`` (owner, explicit share, or team share), the same pattern
+    ``get_user_mcp_workflows`` and ``toggle_workflow_mcp`` already use. Unlike
+    ``get_user_mcp_workflows``, this does not filter on ``mcp_enabled`` - the settings page
+    must list workflows the user could still enable, not just ones already on.
+    """
     result = await db.execute(
         select(Workflow)
         .where(
             Workflow.kind != "dashboard_widget",
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
+                and_(
+                    Workflow.id.in_(
+                        select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
+                    ),
+                    workflow_access_clause(user_id),
+                ),
             ),
         )
         .order_by(Workflow.name.asc())
