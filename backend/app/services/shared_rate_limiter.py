@@ -60,3 +60,17 @@ class SharedRateLimiter:
                 return False, self._ban
 
         return True, 0
+
+    def record_success(self, identifier: str) -> None:
+        """Undo the admission-control increment for a request that turned out to be legitimate.
+
+        Never resets to 0: the key is shared across every caller behind the same
+        identifier (e.g. workflow+IP, not workflow+IP+username), so a full reset would
+        let anyone with their own valid credentials on that identifier clear out
+        failures someone else just accumulated.
+        """
+        key = f"{self._ns}:{identifier}"
+        with self._lock:
+            s = self._mem.get(key)
+            if s is not None and s["count"] > 0:
+                s["count"] -= 1

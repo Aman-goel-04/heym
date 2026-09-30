@@ -84,6 +84,7 @@ class PortalLoginRateLimiter:
 
     def record_successful_login(self, workflow_id: str, client_ip: str) -> None:
         sub = self._get_key(workflow_id, client_ip)
+        _shared.record_success(sub)
         with self._lock:
             self._attempts.pop(sub, None)
 
