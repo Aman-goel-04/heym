@@ -1532,3 +1532,157 @@ class RealPostgresExecutionRecoveryOwnershipTests(unittest.IsolatedAsyncioTestCa
                 )
             ).scalar_one_or_none()
             self.assertIsNone(active, "Active row must be absent after completion")
+
+
+class RecoveryScopeTests(unittest.TestCase):
+    def _scope(self, *, cluster: bool, main: bool, leader: bool):
+        from app.services.execution_recovery import recovery_scope
+
+        return recovery_scope(cluster_enabled=cluster, is_main=main, is_leader=leader)
+
+    def test_single_instance_leader_sweeps_everything(self) -> None:
+        self.assertEqual(self._scope(cluster=False, main=True, leader=True), "all")
+        self.assertIsNone(self._scope(cluster=False, main=True, leader=False))
+
+    def test_main_leader_sweeps_everything(self) -> None:
+        self.assertEqual(self._scope(cluster=True, main=True, leader=True), "all")
+
+    def test_main_follower_still_sweeps_its_pinned_orphans(self) -> None:
+        self.assertEqual(self._scope(cluster=True, main=True, leader=False), "main_only")
+
+    def test_worker_leader_leaves_main_only_orphans_alone(self) -> None:
+        self.assertEqual(self._scope(cluster=True, main=False, leader=True), "anywhere")
+
+    def test_worker_follower_does_not_sweep(self) -> None:
+        self.assertIsNone(self._scope(cluster=True, main=False, leader=False))
+
+
+class SweepScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def _sweep(self, scope: str):
+        from app.services.execution_recovery import ExecutionRecoveryService
+
+        with (
+            patch(
+                "app.services.execution_recovery.cleanup_completed_active_executions",
+                AsyncMock(return_value=0),
+            ) as cleanup,
+            patch(
+                "app.services.execution_recovery.claim_orphaned_executions",
+                AsyncMock(return_value=[]),
+            ) as claim,
+        ):
+            await ExecutionRecoveryService()._sweep_once(scope)
+        return cleanup, claim
+
+    async def test_all_scope_claims_without_a_filter(self) -> None:
+        cleanup, claim = await self._sweep("all")
+        cleanup.assert_awaited_once()
+        self.assertIsNone(claim.await_args.kwargs["workflow_filter"])
+
+    async def test_worker_leader_filter_drops_main_only_workflows(self) -> None:
+        pinned, free = uuid.uuid4(), uuid.uuid4()
+        _, claim = await self._sweep("anywhere")
+        with patch(
+            "app.services.execution_recovery.main_only_workflow_ids",
+            AsyncMock(return_value={pinned}),
+        ):
+            allowed = await claim.await_args.kwargs["workflow_filter"]({pinned, free})
+        self.assertEqual(allowed, {free})
+
+    async def test_main_follower_filter_keeps_only_main_only_workflows(self) -> None:
+        pinned, free = uuid.uuid4(), uuid.uuid4()
+        cleanup, claim = await self._sweep("main_only")
+        cleanup.assert_not_called()
+        with patch(
+            "app.services.execution_recovery.main_only_workflow_ids",
+            AsyncMock(return_value={pinned}),
+        ):
+            allowed = await claim.await_args.kwargs["workflow_filter"]({pinned, free})
+        self.assertEqual(allowed, {pinned})
+
+
+class MainOnlyWorkflowIdsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_and_opencode_pin_to_main_and_plain_graphs_do_not(self) -> None:
+        from app.services.execution_recovery import main_only_workflow_ids
+
+        def workflow(node_type: str):
+            return SimpleNamespace(
+                id=uuid.uuid4(), owner_id=uuid.uuid4(), nodes=[{"type": node_type, "data": {}}]
+            )
+
+        codex, opencode, http = workflow("codex"), workflow("opencodeGo"), workflow("http")
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = [codex, opencode, http]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=result)
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("app.db.session.async_session_maker", return_value=cm),
+            patch("app.api.workflows.collect_referenced_workflows", AsyncMock(return_value={})),
+        ):
+            pinned = await main_only_workflow_ids({codex.id, opencode.id, http.id})
+
+        self.assertEqual(pinned, {codex.id, opencode.id})
+
+
+class ClaimWorkflowFilterTests(unittest.IsolatedAsyncioTestCase):
+    def _session_cm(self, rows: list, execute_results: list):
+        select_result = MagicMock()
+        select_result.all.return_value = rows
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=[select_result, *execute_results])
+        session.commit = AsyncMock()
+        savepoint = MagicMock()
+        savepoint.__aenter__ = AsyncMock(return_value=savepoint)
+        savepoint.__aexit__ = AsyncMock(return_value=False)
+        session.begin_nested = MagicMock(return_value=savepoint)
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm, session
+
+    def _row(self, workflow_id: uuid.UUID):
+        return MagicMock(
+            execution_id=uuid.uuid4(),
+            workflow_id=workflow_id,
+            inputs={},
+            trigger_source="board",
+            actor_user_id=None,
+            attempt=0,
+        )
+
+    async def test_filtered_out_rows_are_never_claimed(self) -> None:
+        from app.services.execution_cancellation import claim_orphaned_executions
+
+        pinned_wf, free_wf = uuid.uuid4(), uuid.uuid4()
+        pinned_row, free_row = self._row(pinned_wf), self._row(free_wf)
+        cm, session = self._session_cm(
+            [pinned_row, free_row], [MagicMock(rowcount=1), MagicMock(rowcount=1)]
+        )
+
+        async def only_free(_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+            return {free_wf}
+
+        with patch("app.services.execution_cancellation.async_session_maker", return_value=cm):
+            claimed = await claim_orphaned_executions(workflow_filter=only_free)
+
+        self.assertEqual([c.execution_id for c in claimed], [free_row.execution_id])
+        # One candidate scan plus the active-row and queue-row updates for one claim.
+        self.assertEqual(session.execute.await_count, 3)
+
+    async def test_failing_filter_claims_nothing(self) -> None:
+        from app.services.execution_cancellation import claim_orphaned_executions
+
+        cm, session = self._session_cm([self._row(uuid.uuid4())], [])
+
+        async def broken(_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+            raise RuntimeError("db down")
+
+        with patch("app.services.execution_cancellation.async_session_maker", return_value=cm):
+            claimed = await claim_orphaned_executions(workflow_filter=broken)
+
+        self.assertEqual(claimed, [])
+        self.assertEqual(session.execute.await_count, 1)

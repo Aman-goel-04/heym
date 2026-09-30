@@ -6,6 +6,8 @@ import logging
 import uuid
 from typing import Literal
 
+from app.config import settings
+from app.services.cluster import identity
 from app.services.distributed_lock import lock_service
 from app.services.execution_cancellation import (
     RECOVERY_STALE_AFTER_SECONDS,  # noqa: F401  (re-exported for callers/tests)
@@ -22,6 +24,79 @@ _RECOVERY_GRACE_SECONDS = 5.0
 _RECOVERY_POLL_SECONDS = 15.0
 
 RecoveryAction = Literal["rerun", "skipped", "failed"]
+
+# Which orphans this process may claim in one sweep.
+#   all        - no cluster, or the leader is main: every orphan.
+#   anywhere   - the leader is a worker: only orphans that may run off main.
+#   main_only  - main is not the leader: only orphans pinned to main.
+RecoveryScope = Literal["all", "anywhere", "main_only"]
+
+
+def recovery_scope(
+    *, cluster_enabled: bool, is_main: bool, is_leader: bool
+) -> RecoveryScope | None:
+    """Which orphans this process sweeps, or None when it should not sweep at all.
+
+    Recovery re-runs a workflow inside the claiming process, so the claimer has to
+    be somewhere the workflow is allowed to run. The recovery leader is whichever
+    process holds the advisory lock, and after a restart of main that can be a
+    worker. A worker leader therefore leaves main-only orphans alone, and main
+    sweeps them itself even when it is not the leader.
+    """
+    if not cluster_enabled:
+        return "all" if is_leader else None
+    if is_main:
+        return "all" if is_leader else "main_only"
+    return "anywhere" if is_leader else None
+
+
+async def main_only_workflow_ids(workflow_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+    """Workflows, from this set, whose graph is pinned to the main instance.
+
+    A workflow that cannot be analysed counts as pinned: main can run anything, a
+    worker cannot, so the failure must resolve toward main.
+    """
+    from sqlalchemy import select
+
+    from app.api.workflows import collect_referenced_workflows
+    from app.db.models import Workflow
+    from app.db.session import async_session_maker
+    from app.services.cluster.dispatch import resolve_placement
+    from app.services.cluster.node_placement import Placement
+
+    pinned: set[uuid.UUID] = set()
+    async with async_session_maker() as session:
+        workflows = (
+            (await session.execute(select(Workflow).where(Workflow.id.in_(workflow_ids))))
+            .scalars()
+            .all()
+        )
+        for workflow in workflows:
+            nodes = list(workflow.nodes or [])
+            try:
+                cache = await collect_referenced_workflows(
+                    session, nodes, actor_user_id=workflow.owner_id
+                )
+                placement = resolve_placement(nodes, cache)
+            except Exception:
+                logger.exception("Could not resolve placement for workflow %s", workflow.id)
+                pinned.add(workflow.id)
+                continue
+            if placement == Placement.MAIN_ONLY.value:
+                pinned.add(workflow.id)
+    return pinned
+
+
+def _scope_filter(scope: RecoveryScope):
+    """Claim filter for a scope, or None when the scope claims everything."""
+    if scope == "all":
+        return None
+
+    async def _filter(workflow_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+        pinned = await main_only_workflow_ids(workflow_ids)
+        return pinned if scope == "main_only" else workflow_ids - pinned
+
+    return _filter
 
 
 def decide_recovery_action(
@@ -64,8 +139,15 @@ class ExecutionRecoveryService:
         await asyncio.sleep(_RECOVERY_GRACE_SECONDS)
         while self._running:
             try:
-                if lock_service.is_leader:
-                    await self._sweep_once()
+                is_leader = lock_service.is_leader
+                scope = recovery_scope(
+                    cluster_enabled=settings.cluster_enabled,
+                    is_main=identity.is_main(),
+                    is_leader=is_leader,
+                )
+                if scope is not None:
+                    await self._sweep_once(scope)
+                if is_leader:
                     # Startup alone is too early: a run whose heartbeat was still fresh
                     # when this process booted is only settleable once it goes stale.
                     await reconcile_orphaned_board_runs()
@@ -75,9 +157,11 @@ class ExecutionRecoveryService:
                 logger.exception("Execution recovery sweep failed")
             await asyncio.sleep(_RECOVERY_POLL_SECONDS)
 
-    async def _sweep_once(self) -> None:
-        await cleanup_completed_active_executions()
-        orphans = await claim_orphaned_executions()
+    async def _sweep_once(self, scope: RecoveryScope = "all") -> None:
+        # Cleanup is leader work; a non-leader main only sweeps its own pinned orphans.
+        if scope != "main_only":
+            await cleanup_completed_active_executions()
+        orphans = await claim_orphaned_executions(workflow_filter=_scope_filter(scope))
         for orphan in orphans:
             asyncio.create_task(self._recover_one(orphan))
 
