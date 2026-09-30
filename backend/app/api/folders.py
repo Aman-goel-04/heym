@@ -20,6 +20,7 @@ from app.models.schemas import (
     WorkflowListResponse,
 )
 from app.services.audit_log import audit
+from app.services.workflow_access import workflow_access_clause
 from app.services.workflow_last_trigger import (
     fetch_last_trigger_source,
     fetch_last_trigger_sources,
@@ -72,7 +73,12 @@ def _write_folder_to_zip(
 def _accessible_workflow_filter(user_id: uuid.UUID):
     return or_(
         Workflow.owner_id == user_id,
-        Workflow.id.in_(select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)),
+        Workflow.id.in_(
+            select(WorkflowShare.workflow_id).where(
+                WorkflowShare.user_id == user_id,
+                WorkflowShare.is_explicit_share.is_(True),
+            )
+        ),
         Workflow.id.in_(
             select(WorkflowTeamShare.workflow_id).where(
                 WorkflowTeamShare.team_id.in_(
@@ -89,6 +95,15 @@ async def _set_shared_workflow_folder(
     user_id: uuid.UUID,
     folder_id: uuid.UUID | None,
 ) -> WorkflowShare:
+    """Remember which folder ``user_id`` filed this workflow into.
+
+    When no share row exists yet, the workflow is only reachable through a team
+    share, and this call must not grant standing access on its own. The new row
+    is marked ``is_explicit_share=False`` so it is pure folder-id bookkeeping:
+    access checks (``workflow_access_clause``, ``_accessible_workflow_filter``)
+    ignore it, and it is excluded from the workflow's share list. If the owner
+    later shares the workflow with this user directly, that flips to True.
+    """
     share_result = await db.execute(
         select(WorkflowShare).where(
             WorkflowShare.workflow_id == workflow_id,
@@ -97,7 +112,12 @@ async def _set_shared_workflow_folder(
     )
     share = share_result.scalar_one_or_none()
     if share is None:
-        share = WorkflowShare(workflow_id=workflow_id, user_id=user_id, folder_id=folder_id)
+        share = WorkflowShare(
+            workflow_id=workflow_id,
+            user_id=user_id,
+            folder_id=folder_id,
+            is_explicit_share=False,
+        )
         db.add(share)
     else:
         share.folder_id = folder_id
@@ -194,6 +214,24 @@ async def get_folder_tree(
         )
     )
     shares_with_folders = list(shares_result.scalars().all())
+
+    # A row here may be pure folder-id bookkeeping for a workflow the user reaches only
+    # through a team share (see WorkflowShare.is_explicit_share): still show it in the
+    # folder they filed it into as long as some access path currently holds, but drop it
+    # the moment that path (team share, membership, or an explicit share) is gone, rather
+    # than keying visibility off the row's mere existence.
+    candidate_ids = {share.workflow_id for share in shares_with_folders}
+    accessible_ids: set[uuid.UUID] = set()
+    if candidate_ids:
+        accessible_result = await db.execute(
+            select(Workflow.id).where(
+                Workflow.id.in_(candidate_ids), workflow_access_clause(current_user.id)
+            )
+        )
+        accessible_ids = set(accessible_result.scalars().all())
+    shares_with_folders = [
+        share for share in shares_with_folders if share.workflow_id in accessible_ids
+    ]
 
     last_trigger_sources = await fetch_last_trigger_sources(
         db,

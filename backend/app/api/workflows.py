@@ -2207,7 +2207,10 @@ async def list_workflow_shares(
     result = await db.execute(
         select(WorkflowShare, User)
         .join(User, User.id == WorkflowShare.user_id)
-        .where(WorkflowShare.workflow_id == workflow_id)
+        .where(
+            WorkflowShare.workflow_id == workflow_id,
+            WorkflowShare.is_explicit_share.is_(True),
+        )
         .order_by(User.email.asc())
     )
     shares = []
@@ -2269,6 +2272,22 @@ async def create_workflow_share(
     if share is None:
         share = WorkflowShare(workflow_id=workflow.id, user_id=target_user.id)
         db.add(share)
+        await db.flush()
+        await db.refresh(share)
+        audit(
+            action="workflow.share_add",
+            actor=current_user,
+            target_type="workflow",
+            target_id=workflow.id,
+            target_name=workflow.name,
+            grantee_id=target_user.id,
+            grantee_email=target_user.email,
+        )
+    elif not share.is_explicit_share:
+        # A row already exists only because this user filed the workflow into a personal
+        # folder while reaching it through a team share. An explicit invite now turns that
+        # into a real grant, same as if no row had existed.
+        share.is_explicit_share = True
         await db.flush()
         await db.refresh(share)
         audit(

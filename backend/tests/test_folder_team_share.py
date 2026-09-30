@@ -75,6 +75,10 @@ class FolderTeamShareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(added_share.workflow_id, workflow_id)
         self.assertEqual(added_share.user_id, user_id)
         self.assertEqual(added_share.folder_id, folder_id)
+        # Regression guard for GHSA-m42h-xrpg-h98v: this row exists only to remember the
+        # folder placement, not because the owner shared the workflow with this user. It
+        # must never be usable as a standing access grant.
+        self.assertFalse(added_share.is_explicit_share)
         db.commit.assert_awaited_once()
 
     async def test_move_team_shared_workflow_updates_existing_share(self) -> None:

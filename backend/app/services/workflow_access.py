@@ -21,6 +21,23 @@ from app.db.models import (
 from app.services.dashboard_access import writable_shared_widget_workflow_ids
 
 
+def explicit_workflow_share_ids(user_id: UUID):
+    """Workflow ids ``user_id`` reaches through a real, owner-granted direct share.
+
+    Excludes a ``WorkflowShare`` row with ``is_explicit_share`` false: that row only
+    remembers which folder the user filed a team-shared workflow into and must never
+    substitute for the team share that actually gave them access. Every query that
+    means "workflows this user holds a direct share on" - access checks, MCP
+    exposure, chat/analytics/schedule scoping, active-execution visibility - must
+    use this instead of querying ``WorkflowShare`` directly, so a revoked team
+    member's leftover row cannot stand in for the removed grant anywhere.
+    """
+    return select(WorkflowShare.workflow_id).where(
+        WorkflowShare.user_id == user_id,
+        WorkflowShare.is_explicit_share.is_(True),
+    )
+
+
 def workflow_access_clause(user_id: UUID) -> ColumnElement[bool]:
     """Return the WHERE clause matching every workflow ``user_id`` can reach.
 
@@ -31,7 +48,7 @@ def workflow_access_clause(user_id: UUID) -> ColumnElement[bool]:
     """
     return or_(
         Workflow.owner_id == user_id,
-        Workflow.id.in_(select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)),
+        Workflow.id.in_(explicit_workflow_share_ids(user_id)),
         Workflow.id.in_(
             select(WorkflowTeamShare.workflow_id).where(
                 WorkflowTeamShare.team_id.in_(

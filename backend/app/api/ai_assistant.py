@@ -49,7 +49,6 @@ from app.db.models import (
     TeamMember,
     User,
     Workflow,
-    WorkflowShare,
     WorkflowTeamShare,
     WorkflowVersion,
 )
@@ -125,6 +124,7 @@ from app.services.run_history import record_run_history
 from app.services.schedule_range import resolve_schedule_tool_range
 from app.services.ssrf_guard import SsrfBlockedError
 from app.services.timezone_utils import get_configured_timezone
+from app.services.workflow_access import explicit_workflow_share_ids
 from app.services.workflow_dsl_prompt import (
     CLARIFY_PROTOCOL_PROMPT,
     DASHBOARD_WIDGET_PROMPT_HINT,
@@ -1634,9 +1634,7 @@ async def get_workflows_for_user_with_inputs(
         .where(
             or_(
                 Workflow.owner_id == user_id,
-                Workflow.id.in_(
-                    select(WorkflowShare.workflow_id).where(WorkflowShare.user_id == user_id)
-                ),
+                Workflow.id.in_(explicit_workflow_share_ids(user_id)),
                 Workflow.id.in_(team_shared_ids),
             )
         )
