@@ -4,14 +4,18 @@ import base64
 import datetime
 import hashlib
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt import PyJWKClient
+from jwt.algorithms import RSAAlgorithm
 
 from app.services.oidc_client import (
     OidcError,
     build_authorization_url,
+    get_signing_key,
     make_pkce_pair,
     parse_discovery_document,
     verify_id_token,
@@ -206,3 +210,20 @@ class IdTokenVerificationTests(unittest.TestCase):
     def test_token_without_a_subject_is_rejected(self) -> None:
         with self.assertRaises(OidcError):
             self._verify(_issue(sub=""))
+
+
+class SigningKeyResolutionTests(unittest.TestCase):
+    def test_a_malformed_key_in_the_jwks_does_not_hide_the_valid_one(self) -> None:
+        """GHSA-w6j9-cwv2-h6wq: one broken RSA key used to abort parsing of the whole set."""
+        valid = RSAAlgorithm.to_jwk(_PRIVATE_KEY.public_key(), as_dict=True)
+        valid.update({"kid": "current", "use": "sig"})
+        # A private exponent that does not match n/e, with no CRT parameters.
+        broken = {"kty": "RSA", "kid": "broken", "n": valid["n"], "e": valid["e"], "d": "AAAAAA"}
+        token = jwt.encode(
+            {"sub": "ada-subject"}, _PRIVATE_KEY, algorithm="RS256", headers={"kid": "current"}
+        )
+
+        with patch.object(PyJWKClient, "fetch_data", return_value={"keys": [broken, valid]}):
+            key = get_signing_key(parse_discovery_document(_DISCOVERY), token)
+
+        self.assertEqual(key.public_numbers(), _PRIVATE_KEY.public_key().public_numbers())
