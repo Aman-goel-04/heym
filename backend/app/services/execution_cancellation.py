@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -1406,8 +1406,16 @@ async def mark_own_executions_orphaned() -> int:
     return result.rowcount or 0
 
 
-async def claim_orphaned_executions(*, now: datetime | None = None) -> list["ClaimedOrphan"]:
+async def claim_orphaned_executions(
+    *,
+    now: datetime | None = None,
+    workflow_filter: Callable[[set[uuid.UUID]], Awaitable[set[uuid.UUID]]] | None = None,
+) -> list["ClaimedOrphan"]:
     """Atomically claim recoverable rows whose heartbeat is stale; return the winners.
+
+    `workflow_filter` receives the workflow ids of the stale candidates and returns the
+    subset this instance may recover. Rows outside it are left untouched, so another
+    instance can claim them. A filter that raises claims nothing this tick.
 
     Every claim runs in its own savepoint. Without that, one unreadable or locked row
     aborts the shared transaction and no orphan anywhere in the deployment can be
@@ -1482,6 +1490,14 @@ async def claim_orphaned_executions(*, now: datetime | None = None) -> list["Cla
             _claim_failures.failure("orphan candidate scan", exc)
             return []
         _claim_failures.success("orphan candidate scan")
+
+        if workflow_filter is not None and candidates:
+            try:
+                allowed = await workflow_filter({row.workflow_id for row in candidates})
+            except Exception:
+                logger.exception("Orphan workflow filter failed; claiming nothing this sweep")
+                return []
+            candidates = [row for row in candidates if row.workflow_id in allowed]
 
         for row in candidates:
             recovery_token = uuid.uuid4()
