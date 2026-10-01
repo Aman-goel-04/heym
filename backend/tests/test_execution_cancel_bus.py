@@ -156,7 +156,7 @@ class ListenerReconnectTests(unittest.IsolatedAsyncioTestCase):
         listener = ExecutionCancelListener()
         attempts = 0
 
-        async def connect(_dsn):
+        async def connect(_dsn, **_kwargs):
             nonlocal attempts
             attempts += 1
             if attempts >= 3:

@@ -4,7 +4,9 @@ The previous implementation kept conversation streams in a per-process dict,
 which broke under `uvicorn --workers N` (the POST that started the task and the
 GET that subscribed to it could land on different workers). This implementation
 uses a `chat_stream_events` table for durable replay plus Postgres
-`LISTEN`/`NOTIFY` to wake up subscribers in any worker.
+`LISTEN`/`NOTIFY` to wake up subscribers in any worker. Every process holds a
+single shared LISTEN connection (see `chat_stream_bus`) instead of one per
+stream, so open streams do not consume database connections.
 
 Wire-format compatibility: events are serialized to SSE-formatted strings at
 publish time, so consumers receive `str` payloads (already `data: ...\\n\\n`)
@@ -21,22 +23,31 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-import asyncpg
 import sqlalchemy as sa
 
-from app.db.session import async_session_maker, libpq_dsn
+from app.db.session import async_session_maker
+from app.services.chat_stream_bus import CHANNEL as CHAT_STREAM_CHANNEL
+from app.services.chat_stream_bus import chat_stream_bus
 
 ChatEvent = str | dict[str, Any]
 logger = logging.getLogger(__name__)
 
+# How long a subscriber waits for the shared LISTEN to be established before it
+# falls back to polling alone.
+_LISTEN_READY_TIMEOUT_SECONDS = 2.0
+# A notification only wakes a subscriber early; the events are read from the
+# table. The fallback covers a notification lost while the shared connection was
+# down, or sent by a process still running the previous per-conversation channel.
+_POLL_FALLBACK_CONNECTED_SECONDS = 10.0
+_POLL_FALLBACK_DISCONNECTED_SECONDS = 2.0
 
-def _channel_name(conv_id: str) -> str:
-    """Build a Postgres NOTIFY channel name for a conversation.
 
-    Channel names are limited to NAMEDATALEN (63 chars). `chat_stream_` (12) +
-    UUID hex without hyphens (32) = 44 chars, well under the limit.
-    """
-    return f"chat_stream_{conv_id.replace('-', '_').replace('+', '_')}"
+async def _notify(session: Any, conv_id: str) -> None:
+    """Announce new events for ``conv_id``. Delivered when the transaction commits."""
+    await session.execute(
+        sa.text("SELECT pg_notify(:channel, :payload)"),
+        {"channel": CHAT_STREAM_CHANNEL, "payload": conv_id},
+    )
 
 
 def _serialize_event(event: ChatEvent) -> str:
@@ -93,7 +104,6 @@ async def remove_task(conv_id: str) -> None:
 
 async def publish(conv_id: str, event: ChatEvent) -> None:
     payload = _serialize_event(event)
-    channel = _channel_name(conv_id)
     async with async_session_maker() as session:
         await session.execute(
             sa.text(
@@ -102,13 +112,11 @@ async def publish(conv_id: str, event: ChatEvent) -> None:
             ),
             {"cid": conv_id, "payload": payload},
         )
-        # NOTIFY is delivered when the transaction commits.
-        await session.execute(sa.text(f'NOTIFY "{channel}"'))
+        await _notify(session, conv_id)
         await session.commit()
 
 
 async def finish(conv_id: str) -> None:
-    channel = _channel_name(conv_id)
     async with async_session_maker() as session:
         await session.execute(
             sa.text(
@@ -117,7 +125,7 @@ async def finish(conv_id: str) -> None:
             ),
             {"cid": conv_id},
         )
-        await session.execute(sa.text(f'NOTIFY "{channel}"'))
+        await _notify(session, conv_id)
         await session.commit()
 
 
@@ -146,8 +154,6 @@ async def subscribe(
         return
 
     queue: asyncio.Queue[ChatEvent | None] = asyncio.Queue()
-    channel = _channel_name(conv_id)
-    listen_conn: asyncpg.Connection | None = None
     listener_task: asyncio.Task[None] | None = None
     last_seq = 0
     notify_wakeup = asyncio.Event()
@@ -178,7 +184,13 @@ async def subscribe(
     async def listener() -> None:
         try:
             while True:
-                await notify_wakeup.wait()
+                poll_after = (
+                    _POLL_FALLBACK_CONNECTED_SECONDS
+                    if chat_stream_bus.is_connected
+                    else _POLL_FALLBACK_DISCONNECTED_SECONDS
+                )
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(notify_wakeup.wait(), timeout=poll_after)
                 notify_wakeup.clear()
                 if await fetch_new_events():
                     return
@@ -189,29 +201,26 @@ async def subscribe(
             with contextlib.suppress(Exception):
                 await queue.put(None)
 
-    def on_notify(*_args: Any) -> None:
-        notify_wakeup.set()
+    await chat_stream_bus.start()
+    await chat_stream_bus.wait_until_listening(_LISTEN_READY_TIMEOUT_SECONDS)
+    # Register before the first drain so a notification that lands in between
+    # is not lost; the shared connection is already listening at this point.
+    chat_stream_bus.register(conv_id, notify_wakeup)
 
     try:
-        listen_conn = await asyncpg.connect(libpq_dsn())
-        await listen_conn.add_listener(channel, on_notify)
         # Drain whatever already exists before yielding the queue so the consumer
-        # never misses early events that arrived before LISTEN was attached.
+        # never misses early events that arrived before the registration.
         if await fetch_new_events():
             yield queue
             return
         # Schedule another drain in case a NOTIFY fired between the initial
-        # fetch and add_listener — set the wakeup so the listener picks it up.
+        # fetch and registration — set the wakeup so the listener picks it up.
         notify_wakeup.set()
         listener_task = asyncio.create_task(listener())
         yield queue
     finally:
+        chat_stream_bus.unregister(conv_id, notify_wakeup)
         if listener_task is not None:
             listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await listener_task
-        if listen_conn is not None:
-            with contextlib.suppress(Exception):
-                await listen_conn.remove_listener(channel, on_notify)
-            with contextlib.suppress(Exception):
-                await listen_conn.close()
