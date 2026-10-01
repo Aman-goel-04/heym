@@ -51,6 +51,52 @@ KNOWN_LIMITS: dict[str, int] = {
     "gemini-2.0-flash": 1_048_576,
     "gemini-1.5-pro": 2_000_000,
     "gemini-1.5-flash": 1_000_000,
+    # Popular models (OpenRouter / OpenCode catalogs) — 2026-10.
+    # One key per model family. When variants of a family differ, the lowest
+    # window is used. Matching is first-hit, so a specific key must stay above
+    # any shorter key that would also match it.
+    # OpenAI
+    "gpt-6": 1_050_000,
+    "gpt-5.6": 1_050_000,
+    # Anthropic
+    "claude-fable-5": 1_000_000,
+    "claude-opus-5": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
+    # Google
+    "gemini-3": 1_048_576,
+    # DeepSeek
+    "deepseek-v4": 1_000_000,
+    # Z.ai GLM
+    "glm-5": 1_000_000,
+    # Xiaomi MiMo
+    "mimo-v2.6": 1_048_576,
+    "mimo-v2.5": 1_000_000,
+    # Tencent
+    "hy4-preview": 1_024_000,
+    "hy3": 256_000,
+    # Moonshot Kimi
+    "kimi-k3": 1_048_576,
+    "kimi-k2": 262_144,
+    # Meta
+    "muse-spark": 1_048_576,
+    "llama-4-scout": 10_000_000,
+    # MiniMax
+    "minimax-m3": 1_000_000,
+    "minimax-m2.7": 204_800,
+    # xAI
+    "grok-4.20": 2_000_000,
+    "grok-4": 500_000,
+    # Alibaba Qwen
+    "qwen3.8": 1_000_000,
+    "qwen3.7": 1_000_000,
+    "qwen3.6": 1_000_000,
+    # Meituan LongCat
+    "longcat-2": 1_000_000,
+    # Stealth / other
+    "space-bunny": 1_000_000,
+    "nemotron-3-ultra": 1_000_000,
+    "solar-pro-4": 524_288,
+    "laguna-s-2.1": 262_144,
 }
 
 _DEFAULT_LIMIT = 128_000
