@@ -150,7 +150,7 @@ async def add_test_case(
             EvalTestCase.suite_id == suite_id
         )
     )
-    max_idx = max_idx_result.scalar() or -1
+    max_idx = max_idx_result.scalar()
     order_index = max_idx + 1
     tc = EvalTestCase(
         suite_id=suite_id,
@@ -285,7 +285,7 @@ async def generate_suite_test_data(
             EvalTestCase.suite_id == suite_id
         )
     )
-    max_idx = max_idx_result.scalar() or -1
+    max_idx = max_idx_result.scalar()
     created = []
     for i, c in enumerate(cases):
         tc = EvalTestCase(

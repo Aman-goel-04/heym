@@ -1515,7 +1515,7 @@ class EvalSuite(Base):
         "EvalTestCase",
         back_populates="suite",
         cascade="all, delete-orphan",
-        order_by="EvalTestCase.order_index",
+        order_by="[EvalTestCase.order_index, EvalTestCase.created_at, EvalTestCase.id]",
     )
     runs: Mapped[list["EvalRun"]] = relationship(
         "EvalRun", back_populates="suite", cascade="all, delete-orphan"
