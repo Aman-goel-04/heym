@@ -31,6 +31,16 @@ async_session_maker = async_sessionmaker(
 )
 
 
+def listener_server_settings() -> dict[str, str]:
+    """Startup parameters for the raw asyncpg connections that hold LISTEN channels.
+
+    Pooled connections are tagged with the instance id; the listeners must carry
+    the same tag, otherwise they show up in ``pg_stat_activity`` with an empty
+    ``application_name`` and cannot be attributed to an instance.
+    """
+    return {"application_name": _application_name()}
+
+
 def libpq_dsn() -> str:
     """Plain libpq URL for consumers that bypass SQLAlchemy's async driver prefix.
 

@@ -72,6 +72,7 @@ from app.http_identity import HEYM_SERVER_AGENT
 from app.middleware.request_body_limit import RequestBodySizeLimitMiddleware
 from app.models.schemas import AppVersionResponse
 from app.observability.tracing import setup_tracing, shutdown_tracing
+from app.services.chat_stream_bus import chat_stream_bus
 from app.services.clickhouse_pool import close_all_clients as close_clickhouse_clients
 from app.services.clickhouse_pool import warm_up_pools as warm_up_clickhouse_pools
 from app.services.cluster.dispatch import run_queue_worker
@@ -206,6 +207,7 @@ async def lifespan(app: FastAPI):
 
     await active_execution_registry.start()
     await execution_cancel_listener.start()
+    await chat_stream_bus.start()
     await heartbeat_service.start()
     await run_result_bus.start()
     await run_queue_worker.start()
@@ -241,6 +243,7 @@ async def lifespan(app: FastAPI):
     await run_queue_worker.stop()
     await run_result_bus.stop()
     await heartbeat_service.stop()
+    await chat_stream_bus.stop()
     await execution_cancel_listener.stop()
     await active_execution_registry.stop()
     with suppress(Exception):

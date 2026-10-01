@@ -66,9 +66,9 @@ The settings panel reports how many of the last 24 hours' runs could only execut
 
 ## Sizing PostgreSQL for a cluster
 
-Connections scale with instances, not just users. Each instance runs several uvicorn processes, and each process holds a connection pool plus three `LISTEN` connections (cancellation, queue wake-ups, run results). A three-instance cluster on the default `max_connections = 100` runs out, and Heym then fails to reach its own database.
+Connections scale with instances, not just users. Each instance runs several uvicorn processes, and each process holds a connection pool plus four `LISTEN` connections (cancellation, queue wake-ups, run results, chat streams). Open chat streams share the one chat connection, so they do not add database connections. A three-instance cluster on the default `max_connections = 100` runs out, and Heym then fails to reach its own database.
 
-Budget roughly `instances x processes x (async pool + sync pool + 3)` and set `max_connections` above it.
+Budget roughly `instances x processes x (async pool + sync pool + 4)` and set `max_connections` above it.
 
 Shrink the pools rather than only raising the ceiling. A single deployment defaults to 10+20 async and 5+10 sync connections per process, which is generous for one machine and far too much for a cluster:
 

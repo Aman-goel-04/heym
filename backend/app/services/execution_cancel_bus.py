@@ -24,7 +24,7 @@ from typing import Any
 import asyncpg
 import sqlalchemy as sa
 
-from app.db.session import libpq_dsn
+from app.db.session import libpq_dsn, listener_server_settings
 from app.services.execution_cancellation import cancel_execution
 
 logger = logging.getLogger(__name__)
@@ -124,7 +124,9 @@ class ExecutionCancelListener:
         while self._running:
             connection: asyncpg.Connection | None = None
             try:
-                connection = await asyncpg.connect(libpq_dsn())
+                connection = await asyncpg.connect(
+                    libpq_dsn(), server_settings=listener_server_settings()
+                )
                 await connection.add_listener(CANCEL_CHANNEL, self._on_notify)
                 self._connected = True
                 logger.info("Execution cancel listener connected")
