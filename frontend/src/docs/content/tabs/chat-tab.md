@@ -32,6 +32,7 @@ You can also start a conversation from the chat box on the [Workflows tab](./wor
 - **Clear chat** – Start a new conversation
 - **Voice input** – Use the microphone button for speech-to-text (browser-supported). When recording stops, Heym can lightly clean up the transcript before you send it
 - **Scheduled workflows** – Ask when cron workflows run (today, this week, this month, or a custom date range). The assistant uses the same schedule data as the [Scheduled](./scheduled-tab.md) tab and can limit results to workflows you own or include those shared with you
+- **Workflow run history** – Ask about one workflow ("how many times did the daily report run?", "did it fail?", "when did it last run?"). Chat looks the workflow up by its ID and answers from its run count, status breakdown, first and last run time, and average duration. Ask why a run failed or what it returned and Chat then opens that single run to read its inputs, outputs, and per-node errors
 - **Live run status** – Ask what is running right now and Chat answers with the count, the workflow names, how long each run has been going, which node it is on, and a link straight to the live run
 
 ## Using Chat from an MCP Client

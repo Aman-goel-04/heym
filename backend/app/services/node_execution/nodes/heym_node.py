@@ -119,7 +119,8 @@ def _require_workflow(ctx: NodeExecutionContext, db: Any, workflow_model: Any, a
 
 def execute(ctx: NodeExecutionContext) -> object:
     """Execute the heym node."""
-    from sqlalchemy import select
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import defer
 
     from app.db import session as db_session
     from app.db.models import ExecutionHistory, Workflow
@@ -181,25 +182,40 @@ def execute(ctx: NodeExecutionContext) -> object:
             )
             status_filter = _resolve(ctx, "heymStatus")
 
-            query = select(ExecutionHistory).where(ExecutionHistory.workflow_id == workflow.id)
+            filters = [ExecutionHistory.workflow_id == workflow.id]
             if since is not None:
-                query = query.where(ExecutionHistory.started_at >= since)
+                filters.append(ExecutionHistory.started_at >= since)
             if status_filter:
-                query = query.where(ExecutionHistory.status == status_filter)
-            query = query.order_by(ExecutionHistory.started_at.desc())
+                filters.append(ExecutionHistory.status == status_filter)
 
-            rows = db.execute(query).scalars().all()
-            selected = rows if limit <= NO_LIST_LIMIT else rows[:limit]
+            # The breakdown is counted in SQL. Loading every row just to tally it
+            # pulls the inputs/outputs/node_results JSON of the workflow's entire
+            # history into memory, which is what used to take the backend down on
+            # workflows with a long history.
+            count_rows = db.execute(
+                select(ExecutionHistory.status, func.count())
+                .where(*filters)
+                .group_by(ExecutionHistory.status)
+            ).all()
+            by_status: dict[str, int] = {status: int(count) for status, count in count_rows}
+            total = sum(by_status.values())
 
-            by_status: dict[str, int] = {}
-            for row in rows:
-                by_status[row.status] = by_status.get(row.status, 0) + 1
+            # Only the requested slice is fetched, and never the node_results trace.
+            query = (
+                select(ExecutionHistory)
+                .options(defer(ExecutionHistory.node_results))
+                .where(*filters)
+                .order_by(ExecutionHistory.started_at.desc())
+            )
+            if limit > NO_LIST_LIMIT:
+                query = query.limit(limit)
+            selected = db.execute(query).scalars().all()
 
             return {
                 "workflow_id": str(workflow.id),
                 "workflow_name": workflow.name,
                 "executions": [_execution_summary(row) for row in selected],
-                "total": len(rows),
+                "total": total,
                 "by_status": by_status,
                 "since": since.isoformat() if since else None,
             }
