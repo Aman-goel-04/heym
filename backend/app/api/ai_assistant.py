@@ -133,6 +133,7 @@ from app.services.workflow_dsl_prompt import (
     is_dashboard_widget_workflow,
 )
 from app.services.workflow_executor import WorkflowCancelledError, execute_workflow
+from app.services.workflow_run_history_tool import get_workflow_run_history
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -459,6 +460,7 @@ DASHBOARD_CHAT_SYSTEM_PROMPT = """You are an assistant that helps the user with 
 4. When the user only asks what workflows exist, what they do, or what inputs they need, use list_workflows and answer from that information—do not execute. Only call execute_workflow when the user explicitly wants to run something or when you need the runtime result (e.g. next birthday date) to answer.
 5. When the user asks about execution or analytics statistics (e.g. how many requests today, how many runs in the last 24 hours, error rate), use get_analytics_stats with the appropriate time_range (24h for today, 7d for last week, 30d, or all). You may pass an optional workflow_id to filter by one workflow (get id from list_workflows). Summarize the result in the user's language.
 6. When the user asks for details of what ran or what came in (e.g. what ran, show details, list recent runs), use get_recent_executions with the appropriate time_range and optionally limit. Summarize the list (workflow name, time, status, brief output) in the user's language.
+6e. When the user asks about the runs of one specific workflow (how many times it ran, whether it failed, when it last ran, what its last status was, why a run failed), use list_workflows to find the workflow_id, then get_workflow_run_history(workflow_id) for metadata: total_runs, status_counts, first_run_at, last_run_at, last_run, avg_execution_time_ms and a page of runs. Answer from that metadata first. Only if the user wants the content of a run, or the reason for a failure, call get_workflow_run_history again with the execution_id of the relevant run (from runs or last_run) to read its inputs, outputs and per-node trace; look at nodes with status error. Use the status argument to list only failed runs, and offset when has_more is true. Do not use get_recent_executions for a question about one named workflow: it only returns the latest runs across all workflows, so the workflow may be missing.
 6a. When the user asks about scheduled cron runs, the calendar, or when workflows will run (today, this week, this month, upcoming times), use get_schedule_events with view_window day, week, or month, optional reference_date (YYYY-MM-DD), include_shared false for owned-only or true to include shared workflows, or start_iso/end_iso for a custom range. Summarize events (workflow name and time) in the user's language.
 6b. When the user asks about kanban boards or their tasks (which boards exist, how many boards, what jobs/tasks are on a board, their status, what is running/pending/failed/done, or what is in a column), use list_boards for an overview and get_board_tasks (optional board_id to scope, optional status filter) for the tasks. For a specific task/card (what it is, its description, the comments/conversation on it, what happened, its output or error), use get_card_detail with the card_id from get_board_tasks. Answer from the results in the user's language; do not execute workflows for these questions.
 6c. When the user naturally asks to add or create a kanban task/card, use create_board_task; this is a board action, not a request to create a workflow, and no command prefix is needed. Pass the user's requested title and optional description. If the user clearly names a board, call list_boards first to resolve its exact board_id. If no board is specified, call create_board_task without board_id: it will create the task when there is exactly one board, or return requires_board_selection with the available boards when there are several. For requires_board_selection, emit one heym-clarify question of type single whose options are the returned board names, then stop and wait. After the user selects a board, call list_boards again to resolve the selected name to its board_id, then call create_board_task exactly once. If a named board is missing or ambiguous, use the same single-choice board selection. Never ask which column to use: create_board_task always places the task in the first column.
@@ -731,6 +733,44 @@ DASHBOARD_CHAT_TOOLS = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_workflow_run_history",
+            "description": "Run history of ONE specific workflow, filtered by workflow_id in the database. Use when the user asks about a particular workflow's runs (e.g. 'how many times did X run?', 'did X fail?', 'when did X last run?', 'what was the status of X's last run?', 'why did X fail?'). Get workflow_id from list_workflows first. Step 1: call with only workflow_id to get metadata: total_runs, status_counts, first_run_at, last_run_at, last_run, avg_execution_time_ms, and a page of runs (execution_id, status, started_at, execution_time_ms, trigger_source). Step 2, only when the user wants the content or the reason: call again with execution_id from runs to get that run's inputs, outputs, and per-node trace (with errors). Prefer this over get_recent_executions whenever a single workflow is named.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "workflow_id": {
+                        "type": "string",
+                        "description": "UUID of the workflow (from list_workflows).",
+                    },
+                    "execution_id": {
+                        "type": "string",
+                        "description": "Optional. UUID of one run from a previous call's runs list. When set, returns that run's inputs, outputs and per-node trace instead of metadata.",
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "description": "Window for metadata: 24h, 7d, 30d, or all. Default all.",
+                        "enum": ["24h", "7d", "30d", "all"],
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional. Only list runs with this status (e.g. success, error). Totals and status_counts still cover the whole window.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max runs to list (default 20, max 50).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Runs to skip, for paging when has_more is true. Default 0.",
+                    },
+                },
+                "required": ["workflow_id"],
             },
         },
     },
@@ -3144,6 +3184,17 @@ def _summarize_tool_result(tool_name: str, result_json: str) -> str:
         if isinstance(data, dict) and "executions" in data:
             return f"{len(data.get('executions', []))} recent execution(s) listed"
         return result_json[:150] + ("..." if len(result_json) > 150 else "")
+    if tool_name == "get_workflow_run_history":
+        if isinstance(data, dict) and data.get("error"):
+            return f"Error: {str(data.get('error'))[:150]}"
+        if isinstance(data, dict) and "execution_id" in data and "nodes" in data:
+            return f"Run detail: {data.get('status')} ({data.get('node_count', 0)} node(s))"
+        if isinstance(data, dict) and "total_runs" in data:
+            return (
+                f"{int(data.get('total_runs') or 0)} run(s), "
+                f"{int(data.get('returned') or 0)} listed"
+            )
+        return result_json[:200] + ("..." if len(result_json) > 200 else "")
     if tool_name == "get_active_executions":
         if isinstance(data, dict) and data.get("error"):
             return f"Error: {str(data.get('error'))[:150]}"
@@ -3262,8 +3313,8 @@ def _chat_tool_lifecycle_status(
             return normalized
         return "error"
 
-    # Card status is domain data (for example active/error), not tool lifecycle state.
-    if tool_name != "get_card_detail":
+    # Card and run status is domain data (for example active/error), not tool lifecycle state.
+    if tool_name not in {"get_card_detail", "get_workflow_run_history"}:
         normalized = _normalized_lifecycle(structured_result.get("status"))
         if normalized is not None:
             return normalized
@@ -4462,6 +4513,57 @@ async def stream_dashboard_chat(
                             "label": step_label,
                             "tool": name,
                             "request": {"time_range": time_range, "limit": limit},
+                            "response_summary": _summarize_tool_result(name, result),
+                            "execution_time_ms": step_ms,
+                        }
+                    )
+                    yield _tool_end_yield(
+                        tc.id,
+                        run_steps[-1]["response_summary"],
+                        run_steps[-1]["execution_time_ms"],
+                        status=_chat_tool_lifecycle_status(name, result),
+                    )
+                elif name == "get_workflow_run_history":
+                    run_history_execution_id = str(args.get("execution_id") or "").strip()
+                    step_label = (
+                        "Reading run details..."
+                        if run_history_execution_id
+                        else "Reading workflow run history..."
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "tool_start",
+                                "id": tc.id,
+                                "name": name,
+                                "label": step_label,
+                                "args": args,
+                            }
+                        )
+                        + "\n\n"
+                    )
+                    step_start = time.time()
+                    result = json.dumps(
+                        await get_workflow_run_history(db, user_id, args), default=str
+                    )
+                    step_ms = round((time.time() - step_start) * 1000, 2)
+                    run_steps.append(
+                        {
+                            "label": step_label,
+                            "tool": name,
+                            "request": {
+                                key: args.get(key)
+                                for key in (
+                                    "workflow_id",
+                                    "execution_id",
+                                    "time_range",
+                                    "status",
+                                    "limit",
+                                    "offset",
+                                )
+                                if args.get(key) not in (None, "")
+                            },
                             "response_summary": _summarize_tool_result(name, result),
                             "execution_time_ms": step_ms,
                         }

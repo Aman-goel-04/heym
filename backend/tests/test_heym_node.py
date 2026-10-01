@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy.dialects import postgresql
+
 from app.services.node_execution.base import NodeExecutionContext
 from app.services.node_execution.nodes import heym_node
 
@@ -195,6 +197,27 @@ class GetExecutionHistoryTest(HeymNodeTestBase):
         result.scalars.return_value.all.return_value = rows
         return result
 
+    def _counts(self, counts: dict[str, int]) -> MagicMock:
+        result = MagicMock()
+        result.all.return_value = list(counts.items())
+        return result
+
+    def _queue(self, owning: MagicMock, target: MagicMock, rows: list, counts: dict) -> None:
+        """Queue the four statements the handler issues, in order."""
+        self.db.execute.side_effect = [
+            self._scalar_one(owning),
+            self._scalar_one(target),
+            self._counts(counts),
+            self._entries(rows),
+        ]
+
+    def _history_sql(self) -> str:
+        """Compile the last two statements (breakdown, slice) for inspection."""
+        return " ".join(
+            str(call.args[0].compile(dialect=postgresql.dialect()))
+            for call in self.db.execute.call_args_list[2:]
+        )
+
     def _entry(self, status: str, minute: int = 0) -> MagicMock:
         entry = MagicMock()
         entry.id = uuid.uuid4()
@@ -212,11 +235,7 @@ class GetExecutionHistoryTest(HeymNodeTestBase):
         owning = _workflow("Owning", self.owner_id)
         target = _workflow("Target", self.owner_id)
         entries = [self._entry("success", 3), self._entry("error", 2), self._entry("success", 1)]
-        self.db.execute.side_effect = [
-            self._scalar_one(owning),
-            self._scalar_one(target),
-            self._entries(entries),
-        ]
+        self._queue(owning, target, entries, {"success": 2, "error": 1})
 
         result = heym_node.execute(
             _ctx({"heymOperation": "getExecutionHistory", "heymWorkflowId": str(target.id)})
@@ -231,11 +250,7 @@ class GetExecutionHistoryTest(HeymNodeTestBase):
     def test_entry_carries_outputs_but_never_node_results(self) -> None:
         owning = _workflow("Owning", self.owner_id)
         target = _workflow("Target", self.owner_id)
-        self.db.execute.side_effect = [
-            self._scalar_one(owning),
-            self._scalar_one(target),
-            self._entries([self._entry("success")]),
-        ]
+        self._queue(owning, target, [self._entry("success")], {"success": 1})
 
         entry = heym_node.execute(
             _ctx({"heymOperation": "getExecutionHistory", "heymWorkflowId": str(target.id)})
@@ -261,12 +276,10 @@ class GetExecutionHistoryTest(HeymNodeTestBase):
     def test_limit_caps_entries_but_the_breakdown_covers_everything(self) -> None:
         owning = _workflow("Owning", self.owner_id)
         target = _workflow("Target", self.owner_id)
-        entries = [self._entry("success", i) for i in range(5)]
-        self.db.execute.side_effect = [
-            self._scalar_one(owning),
-            self._scalar_one(target),
-            self._entries(entries),
-        ]
+        # The database applies the LIMIT, so it hands back only the requested slice
+        # while the breakdown query still counts all five.
+        entries = [self._entry("success", i) for i in range(2)]
+        self._queue(owning, target, entries, {"success": 5})
 
         result = heym_node.execute(
             _ctx(
@@ -282,15 +295,49 @@ class GetExecutionHistoryTest(HeymNodeTestBase):
         self.assertEqual(result["total"], 5)
         self.assertEqual(result["by_status"], {"success": 5})
 
+    def test_history_is_bounded_in_sql_and_skips_node_results(self) -> None:
+        """Regression: the whole history used to be loaded into memory and tallied in Python."""
+        owning = _workflow("Owning", self.owner_id)
+        target = _workflow("Target", self.owner_id)
+        self._queue(owning, target, [self._entry("success")], {"success": 40000})
+
+        heym_node.execute(
+            _ctx(
+                {
+                    "heymOperation": "getExecutionHistory",
+                    "heymWorkflowId": str(target.id),
+                    "heymLimit": "1",
+                    "heymStatus": "success",
+                }
+            )
+        )
+
+        counts_sql, slice_sql = [
+            str(call.args[0].compile(dialect=postgresql.dialect()))
+            for call in self.db.execute.call_args_list[2:]
+        ]
+        self.assertIn("count(", counts_sql.lower())
+        self.assertIn("GROUP BY", counts_sql)
+        self.assertIn("LIMIT", slice_sql)
+        self.assertNotIn("node_results", slice_sql)
+        self.assertNotIn("node_results", counts_sql)
+
+    def test_empty_limit_applies_no_sql_limit(self) -> None:
+        owning = _workflow("Owning", self.owner_id)
+        target = _workflow("Target", self.owner_id)
+        self._queue(owning, target, [self._entry("success")], {"success": 1})
+
+        heym_node.execute(
+            _ctx({"heymOperation": "getExecutionHistory", "heymWorkflowId": str(target.id)})
+        )
+
+        self.assertNotIn("LIMIT", self._history_sql())
+
     def test_empty_limit_returns_every_entry(self) -> None:
         owning = _workflow("Owning", self.owner_id)
         target = _workflow("Target", self.owner_id)
         entries = [self._entry("success", i) for i in range(5)]
-        self.db.execute.side_effect = [
-            self._scalar_one(owning),
-            self._scalar_one(target),
-            self._entries(entries),
-        ]
+        self._queue(owning, target, entries, {"success": 5})
 
         result = heym_node.execute(
             _ctx({"heymOperation": "getExecutionHistory", "heymWorkflowId": str(target.id)})
@@ -301,11 +348,7 @@ class GetExecutionHistoryTest(HeymNodeTestBase):
     def test_since_days_sets_the_window(self) -> None:
         owning = _workflow("Owning", self.owner_id)
         target = _workflow("Target", self.owner_id)
-        self.db.execute.side_effect = [
-            self._scalar_one(owning),
-            self._scalar_one(target),
-            self._entries([self._entry("success")]),
-        ]
+        self._queue(owning, target, [self._entry("success")], {"success": 1})
 
         result = heym_node.execute(
             _ctx(
