@@ -187,6 +187,31 @@ def merge_credential_config_for_update(
                 merged_config[key] = incoming_value
         return merged_config
 
+    if credential_type == CredentialType.telegram:
+        merged_config = dict(existing_config)
+        incoming_bot_token = str(incoming_config.get("bot_token", "") or "").strip()
+        if incoming_bot_token:
+            merged_config["bot_token"] = incoming_bot_token
+        incoming_secret_token = str(incoming_config.get("secret_token", "") or "").strip()
+        if incoming_secret_token:
+            merged_config["secret_token"] = incoming_secret_token
+        return merged_config
+
+    if credential_type == CredentialType.clickhouse:
+        merged_config = dict(existing_config)
+        for key in ("host", "username", "database"):
+            incoming_value = str(incoming_config.get(key, "") or "").strip()
+            if incoming_value:
+                merged_config[key] = incoming_value
+        if "port" in incoming_config:
+            merged_config["port"] = incoming_config["port"]
+        incoming_password = str(incoming_config.get("password", "") or "").strip()
+        if incoming_password:
+            merged_config["password"] = incoming_password
+        if "secure" in incoming_config:
+            merged_config["secure"] = incoming_config["secure"]
+        return merged_config
+
     if credential_type != CredentialType.github:
         return incoming_config
 
@@ -399,6 +424,16 @@ def get_public_credential_fields(
         return {
             "decision_model": str(config.get("decision_model", "") or "").strip() or None,
             "option_count": str(option_count),
+        }
+    if credential_type == CredentialType.clickhouse:
+        port = config.get("port")
+        secure = config.get("secure")
+        return {
+            "host": str(config.get("host", "")).strip() or None,
+            "port": str(port) if port is not None else None,
+            "username": str(config.get("username", "")).strip() or None,
+            "database": str(config.get("database", "")).strip() or None,
+            "secure": str(bool(secure)).lower() if secure is not None else None,
         }
     return {}
 

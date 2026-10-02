@@ -4,7 +4,11 @@ import unittest
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.api.credentials import list_clickhouse_columns
+from app.api.credentials import (
+    get_public_credential_fields,
+    list_clickhouse_columns,
+    merge_credential_config_for_update,
+)
 from app.db.models import Credential
 from app.models.schemas import CredentialType
 
@@ -75,3 +79,116 @@ class TestClickHouseCredentialApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.columns[0].name, "id")
         self.assertEqual(result.columns[1].type, "DateTime")
         mock_columns.assert_called_once_with("events")
+
+
+class TestClickHouseCredentialMerge(unittest.TestCase):
+    """Regression tests: a partial update must not wipe fields it didn't include."""
+
+    def _full_config(self) -> dict:
+        return {
+            "host": "old-host.example.com",
+            "port": 8443,
+            "username": "default",
+            "password": "stored-password",
+            "database": "prod",
+            "secure": True,
+        }
+
+    def test_partial_update_keeps_everything_not_sent(self) -> None:
+        merged = merge_credential_config_for_update(
+            CredentialType.clickhouse,
+            self._full_config(),
+            {"host": "new-host.example.com"},
+        )
+        self.assertEqual(merged["host"], "new-host.example.com")
+        self.assertEqual(merged["port"], 8443)
+        self.assertEqual(merged["username"], "default")
+        self.assertEqual(merged["password"], "stored-password")
+        self.assertEqual(merged["database"], "prod")
+        self.assertEqual(merged["secure"], True)
+
+    def test_blank_password_keeps_the_stored_one(self) -> None:
+        merged = merge_credential_config_for_update(
+            CredentialType.clickhouse,
+            self._full_config(),
+            {"host": "new-host.example.com", "password": ""},
+        )
+        self.assertEqual(merged["password"], "stored-password")
+
+    def test_non_blank_password_overwrites_the_stored_one(self) -> None:
+        merged = merge_credential_config_for_update(
+            CredentialType.clickhouse,
+            self._full_config(),
+            {"password": "new-password"},
+        )
+        self.assertEqual(merged["password"], "new-password")
+
+    def test_secure_false_is_applied_not_treated_as_blank(self) -> None:
+        """secure=False is a real, meaningful value. A truthiness check (`if incoming.get
+        ("secure")`) would treat it the same as "not sent" and silently keep the stored
+        True. The merge must key off presence (`"secure" in incoming_config`) instead."""
+        merged = merge_credential_config_for_update(
+            CredentialType.clickhouse,
+            self._full_config(),
+            {"secure": False},
+        )
+        self.assertEqual(merged["secure"], False)
+
+    def test_secure_omitted_keeps_the_stored_value(self) -> None:
+        merged = merge_credential_config_for_update(
+            CredentialType.clickhouse,
+            self._full_config(),
+            {"host": "new-host.example.com"},
+        )
+        self.assertEqual(merged["secure"], True)
+
+    def test_port_zero_is_applied_not_treated_as_blank(self) -> None:
+        """Mirrors the secure=False case: port is also checked by key presence, so a
+        falsy-but-valid value is never silently discarded."""
+        merged = merge_credential_config_for_update(
+            CredentialType.clickhouse,
+            self._full_config(),
+            {"port": 0},
+        )
+        self.assertEqual(merged["port"], 0)
+
+
+class TestClickHousePublicFields(unittest.TestCase):
+    def test_returns_non_secret_fields_only(self) -> None:
+        fields = get_public_credential_fields(
+            CredentialType.clickhouse,
+            {
+                "host": "ch.example.com",
+                "port": 8443,
+                "username": "default",
+                "password": "secret-value",
+                "database": "prod",
+                "secure": True,
+            },
+        )
+        self.assertEqual(fields["host"], "ch.example.com")
+        self.assertEqual(fields["port"], "8443")
+        self.assertEqual(fields["username"], "default")
+        self.assertEqual(fields["database"], "prod")
+        self.assertEqual(fields["secure"], "true")
+        self.assertNotIn("password", fields)
+
+    def test_secure_false_is_returned_as_the_string_false_not_omitted(self) -> None:
+        """Must stay distinguishable from "not set" (None) so the frontend's
+        `?? "true"` fallback never silently overrides a real False value."""
+        fields = get_public_credential_fields(
+            CredentialType.clickhouse,
+            {"host": "ch.example.com", "secure": False},
+        )
+        self.assertEqual(fields["secure"], "false")
+
+    def test_missing_port_and_secure_are_none_not_the_string_none(self) -> None:
+        """A naive str(config.get("port")) turns a missing port into the literal string
+        "None", which defeats the frontend's `?? "8443"` fallback (a non-empty string is
+        never null/undefined, so the fallback never triggers)."""
+        fields = get_public_credential_fields(
+            CredentialType.clickhouse,
+            {"host": "ch.example.com"},
+        )
+        self.assertIsNone(fields["port"])
+        self.assertIsNone(fields["secure"])
