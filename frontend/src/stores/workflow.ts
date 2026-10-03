@@ -448,7 +448,8 @@ export const useWorkflowStore = defineStore("workflow", () => {
       keepDetails = false,
       search,
       instanceId,
-    }: { keepDetails?: boolean; search?: string; instanceId?: string } = {},
+      status,
+    }: { keepDetails?: boolean; search?: string; instanceId?: string; status?: string } = {},
   ): Promise<void> {
     const workflowId = currentWorkflow.value?.id;
     if (!workflowId) return;
@@ -461,6 +462,7 @@ export const useWorkflowStore = defineStore("workflow", () => {
         search,
         triggerSource,
         instanceId,
+        status,
       );
       if (currentWorkflow.value?.id !== workflowId) return;
       executionHistoryList.value = items;
@@ -481,7 +483,7 @@ export const useWorkflowStore = defineStore("workflow", () => {
 
   async function fetchMoreExecutionHistory(
     triggerSource?: string,
-    { search, instanceId }: { search?: string; instanceId?: string } = {},
+    { search, instanceId, status }: { search?: string; instanceId?: string; status?: string } = {},
   ): Promise<void> {
     const workflowId = currentWorkflow.value?.id;
     if (!workflowId) return;
@@ -496,6 +498,7 @@ export const useWorkflowStore = defineStore("workflow", () => {
         search,
         triggerSource,
         instanceId,
+        status,
       );
       if (currentWorkflow.value?.id !== workflowId) return;
       executionHistoryList.value = [...executionHistoryList.value, ...items];
