@@ -116,6 +116,7 @@ from app.services.hitl_service import (
 )
 from app.services.html_response import build_html_response, find_sole_html_terminal
 from app.services.pending_execution import needs_local_pending_persist
+from app.services.pending_review_cancel import cancel_pending_review_execution
 from app.services.workflow_access import (
     PERMISSION_WRITE,
     get_workflow_permission,
@@ -4245,6 +4246,13 @@ async def cancel_workflow_execution(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workflow not found",
         )
+
+    # A run parked on a HITL / Codex review has no worker handle or registry row to flag,
+    # so it is cancelled by closing its pending review instead.
+    if await cancel_pending_review_execution(
+        db, workflow_id=workflow_id, execution_id=execution_id
+    ):
+        return {"status": "cancel_requested"}
 
     cancelled_local = cancel_active_execution(workflow_id=workflow_id, execution_id=execution_id)
     cancelled_persisted = await request_persisted_execution_cancel(
