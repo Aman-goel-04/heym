@@ -502,12 +502,27 @@ watch(
         redisPort.value = "6379";
         redisPassword.value = "";
         redisDb.value = "0";
-        clickhouseHost.value = "";
-        clickhousePort.value = "8443";
-        clickhouseUsername.value = "default";
-        clickhousePassword.value = "";
-        clickhouseDatabase.value = "default";
-        clickhouseSecure.value = true;
+        clickhouseHost.value =
+          props.credential.type === "clickhouse"
+            ? props.credential.public_fields?.host ?? ""
+            : "";
+        clickhousePort.value =
+          props.credential.type === "clickhouse"
+            ? props.credential.public_fields?.port ?? "8443"
+            : "8443";
+        clickhouseUsername.value =
+          props.credential.type === "clickhouse"
+            ? props.credential.public_fields?.username ?? "default"
+            : "default";
+        clickhousePassword.value = "";   // secret, never pre-filled, same as every other type
+        clickhouseDatabase.value =
+          props.credential.type === "clickhouse"
+            ? props.credential.public_fields?.database ?? "default"
+            : "default";
+        clickhouseSecure.value =
+          props.credential.type === "clickhouse"
+            ? (props.credential.public_fields?.secure ?? "true") === "true"
+            : true;
         qdrantHost.value = "";
         qdrantPort.value = "6333";
         qdrantApiKey.value = "";
@@ -1574,7 +1589,12 @@ async function handleSave(): Promise<void> {
           (type.value === "supabase" && hasSupabaseCredentialConfigChange.value) ||
           notionToken.value.trim() ||
           cohereApiKey.value.trim() ||
-          flaresolverrUrl.value.trim());
+          flaresolverrUrl.value.trim() ||
+          clickhouseHost.value.trim() ||
+          clickhousePort.value.trim() ||
+          clickhouseUsername.value.trim() ||
+          clickhousePassword.value.trim() ||
+          clickhouseDatabase.value.trim());
 
       if (hasConfigChange) {
         updateData.config = buildConfig();
