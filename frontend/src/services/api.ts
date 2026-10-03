@@ -643,6 +643,7 @@ export const workflowApi = {
     search?: string,
     triggerSource?: string,
     instanceId?: string,
+    status?: string,
   ): Promise<HistoryListResponse<AllExecutionHistoryEntryLight>> => {
     const response = await api.get<HistoryListResponse<AllExecutionHistoryEntryLight>>(
       `/workflows/${id}/history`,
@@ -653,6 +654,7 @@ export const workflowApi = {
           search: search || undefined,
           trigger_source: triggerSource || undefined,
           instance_id: instanceId || undefined,
+          status: status || undefined,
         },
       },
     );

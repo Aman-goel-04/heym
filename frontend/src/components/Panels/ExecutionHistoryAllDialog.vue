@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Database,
   Loader2,
   Trash2,
   CheckCircle2,
@@ -38,6 +39,10 @@ import {
   AUTO_REFRESH_MAX_SECONDS,
   HISTORY_AUTO_REFRESH_MIN_SECONDS,
 } from "@/composables/useAutoRefresh";
+import {
+  getHistoryStatusBadgeClass,
+  HISTORY_STATUS_OPTIONS,
+} from "@/lib/executionHistoryStatus";
 import { collectRunImageSrcs, getOutputImageSrcs } from "@/lib/executionImages";
 import { buildDisplayNodeResults, type DisplayNodeResult } from "@/lib/executionLog";
 import { cn } from "@/lib/utils";
@@ -75,8 +80,11 @@ const searchActive = ref(false);
 const searchQuery = ref("");
 const selectedTriggerSource = ref<string | undefined>(undefined);
 const selectedInstanceId = ref<string | undefined>(undefined);
+/** Seeded from `initialStatus` (dashboard / board deep links) each time the dialog opens. */
+const selectedStatus = ref<string | undefined>(undefined);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let skipNextStatusReload = false;
 const SEARCH_DEBOUNCE_MS = 500;
 
 const HISTORY_AUTO_REFRESH_PRESETS = [
@@ -222,7 +230,8 @@ const hasActiveFilters = computed<boolean>(
   () =>
     Boolean(searchQuery.value.trim()) ||
     Boolean(selectedTriggerSource.value) ||
-    Boolean(selectedInstanceId.value),
+    Boolean(selectedInstanceId.value) ||
+    Boolean(selectedStatus.value),
 );
 
 async function ensureEntryLoaded(entryId: string): Promise<void> {
@@ -286,7 +295,7 @@ async function loadHistory(): Promise<void> {
         50,
         0,
         searchQuery.value || undefined,
-        props.initialStatus || undefined,
+        selectedStatus.value,
         selectedTriggerSource.value,
         props.workflowId,
         selectedInstanceId.value,
@@ -356,6 +365,7 @@ watch(
       searchQuery.value = "";
       selectedTriggerSource.value = undefined;
       selectedInstanceId.value = undefined;
+      selectedStatus.value = undefined;
       cancelScheduledSearchReload();
       delete document.body.dataset.heymOverlayEscapeTrap;
       return;
@@ -368,6 +378,12 @@ watch(
     searchActive.value = false;
     searchQuery.value = "";
     selectedTriggerSource.value = undefined;
+    const seededStatus = props.initialStatus || undefined;
+    if (selectedStatus.value !== seededStatus) {
+      // loadHistory below already applies it; skip the watcher's second reload.
+      skipNextStatusReload = true;
+      selectedStatus.value = seededStatus;
+    }
     await loadHistory();
   }
 );
@@ -395,6 +411,19 @@ watch(selectedTriggerSource, async () => {
 });
 
 watch(selectedInstanceId, async () => {
+  if (!props.open) return;
+
+  cancelScheduledSearchReload();
+  entryDetailsCache.value = new Map();
+  expandedNodes.value = new Set();
+  await loadHistory();
+});
+
+watch(selectedStatus, async () => {
+  if (skipNextStatusReload) {
+    skipNextStatusReload = false;
+    return;
+  }
   if (!props.open) return;
 
   cancelScheduledSearchReload();
@@ -463,7 +492,7 @@ async function refreshHistory(): Promise<void> {
         50,
         0,
         searchQuery.value || undefined,
-        props.initialStatus || undefined,
+        selectedStatus.value,
         selectedTriggerSource.value,
         props.workflowId,
         selectedInstanceId.value,
@@ -576,7 +605,7 @@ async function loadMore(): Promise<void> {
       50,
       executionHistory.value.length,
       searchQuery.value || undefined,
-      props.initialStatus || undefined,
+      selectedStatus.value,
       selectedTriggerSource.value,
       props.workflowId,
       selectedInstanceId.value,
@@ -648,6 +677,8 @@ function getStatusIcon(status: string): typeof CheckCircle2 {
       return Clock;
     case "skipped":
       return SkipForward;
+    case "cached":
+      return Database;
     default:
       return Circle;
   }
@@ -664,6 +695,8 @@ function getStatusColor(status: string): string {
       return "text-amber-500";
     case "skipped":
       return "text-gray-400";
+    case "cached":
+      return "text-sky-400";
     default:
       return "text-muted-foreground";
   }
@@ -887,18 +920,18 @@ function bringToCanvas(): void {
   <Dialog
     :open="open"
     title="Execution History"
-    size="4xl"
+    size="5xl"
     content-class="!h-[min(90vh,calc(100dvh-2rem))] sm:!h-[min(85vh,calc(100dvh-3rem))]"
     :close-on-escape="!searchActive || !searchQuery"
     @close="emit('close')"
     @escape="handleDialogEscape"
   >
     <div class="space-y-3 sm:space-y-4">
-      <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-3">
+      <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-3 sm:grid sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-3">
         <p class="order-1 self-center shrink-0 text-base leading-none text-muted-foreground">
           {{ totalCount }} run(s)
         </p>
-        <div class="order-2 flex items-center gap-2 sm:order-3 sm:col-start-3 flex-wrap justify-end shrink-0">
+        <div class="order-2 ml-auto flex items-center gap-1 sm:gap-2 sm:order-3 sm:col-start-3 flex-wrap justify-end shrink-0">
           <AutoRefreshControl
             :active="open"
             :preset-options="[...HISTORY_AUTO_REFRESH_PRESETS]"
@@ -921,10 +954,10 @@ function bringToCanvas(): void {
             />
           </Button>
           <Button
-            v-if="totalCount > 0 || selectedTriggerSource || searchQuery"
-            variant="outline"
+            v-if="totalCount > 0 || hasActiveFilters"
+            variant="ghost"
             size="sm"
-            :class="searchActive ? 'border-primary/60 bg-primary/10' : ''"
+            :class="searchActive ? 'bg-primary/10 text-primary' : ''"
             @click="toggleSearch"
           >
             <Search class="w-4 h-4" />
@@ -940,7 +973,17 @@ function bringToCanvas(): void {
             <span class="hidden lg:inline">Clear All</span>
           </Button>
         </div>
-        <div class="order-3 col-span-2 grid grid-cols-1 gap-2 min-[400px]:grid-cols-2 sm:order-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 sm:grid-cols-2 sm:min-w-0">
+        <div class="order-3 w-full grid grid-cols-1 gap-2 min-[400px]:grid-cols-2 min-[400px]:max-sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:order-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 sm:grid-cols-3 sm:min-w-0">
+          <SearchableSelect
+            v-if="totalCount > 0 || hasActiveFilters"
+            v-model="selectedStatus"
+            :options="[...HISTORY_STATUS_OPTIONS]"
+            placeholder=""
+            search-placeholder="Search statuses..."
+            class="min-w-0 w-full"
+            hide-trigger-icon
+            data-testid="all-execution-history-status-filter"
+          />
           <SearchableSelect
             v-if="triggerSourceOptions.length > 1 || selectedTriggerSource"
             v-model="selectedTriggerSource"
@@ -1097,9 +1140,9 @@ function bringToCanvas(): void {
                 <Clock class="w-4 h-4 text-muted-foreground shrink-0" />
                 <span class="text-sm font-medium truncate">{{ formatTime(entry.started_at) }}</span>
                 <span
-                  v-if="entry.status === 'skipped' || entry.status === 'failed'"
+                  v-if="getHistoryStatusBadgeClass(entry.status)"
                   class="px-1.5 py-0.5 text-[10px] font-semibold rounded uppercase shrink-0 hidden sm:inline"
-                  :class="entry.status === 'skipped' ? 'bg-gray-500/20 text-gray-400' : 'bg-red-500/20 text-red-400'"
+                  :class="getHistoryStatusBadgeClass(entry.status)"
                 >
                   {{ entry.status }}
                 </span>
@@ -1127,7 +1170,7 @@ function bringToCanvas(): void {
               <component
                 :is="getStatusIcon(entry.status)"
                 class="w-5 h-5 shrink-0"
-                :class="entry.status === 'success' ? 'text-emerald-500' : entry.status === 'error' ? 'text-red-500' : 'text-amber-500'"
+                :class="getStatusColor(entry.status)"
               />
             </div>
             <div class="text-xs text-muted-foreground mt-1">

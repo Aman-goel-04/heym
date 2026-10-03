@@ -100,6 +100,111 @@ class ExecutionHistoryApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ilike", total_sql)
         self.assertNotIn("ilike", history_sql)
 
+    async def test_per_workflow_history_applies_status_filter(self) -> None:
+        workflow = MagicMock()
+        workflow.name = "Cached Workflow"
+        self.db.execute = AsyncMock(
+            side_effect=[
+                _ExecuteResult(scalar_value=0),
+                _ExecuteResult(rows=[]),
+            ]
+        )
+
+        with patch(
+            "app.api.workflows.get_workflow_for_user",
+            AsyncMock(return_value=workflow),
+        ):
+            await get_execution_history(
+                workflow_id=uuid.uuid4(),
+                current_user=self.user,
+                db=self.db,
+                trigger_source=None,
+                execution_status="cached",
+            )
+
+        total_sql = _compile_sql(self.db.execute.call_args_list[0].args[0])
+        history_sql = _compile_sql(self.db.execute.call_args_list[1].args[0])
+
+        self.assertIn("execution_history.status = 'cached'", total_sql)
+        self.assertIn("execution_history.status = 'cached'", history_sql)
+
+    async def test_per_workflow_error_filter_includes_failed_recovery_runs(self) -> None:
+        workflow = MagicMock()
+        workflow.name = "Errored Workflow"
+        self.db.execute = AsyncMock(
+            side_effect=[
+                _ExecuteResult(scalar_value=0),
+                _ExecuteResult(rows=[]),
+            ]
+        )
+
+        with patch(
+            "app.api.workflows.get_workflow_for_user",
+            AsyncMock(return_value=workflow),
+        ):
+            await get_execution_history(
+                workflow_id=uuid.uuid4(),
+                current_user=self.user,
+                db=self.db,
+                trigger_source=None,
+                execution_status="error",
+            )
+
+        for call in self.db.execute.call_args_list:
+            sql = _compile_sql(call.args[0])
+            self.assertIn("execution_history.status in ('error', 'failed')", sql)
+
+    async def test_all_history_error_filter_includes_failed_recovery_runs(self) -> None:
+        self.db.execute = AsyncMock(
+            side_effect=[
+                _ExecuteResult(scalar_value=0),
+                _ExecuteResult(rows=[]),
+            ]
+        )
+
+        await list_all_execution_history(
+            current_user=self.user,
+            db=self.db,
+            execution_status="error",
+            trigger_source=None,
+            workflow_id=None,
+        )
+
+        for call in self.db.execute.call_args_list:
+            sql = _compile_sql(call.args[0])
+            self.assertIn("execution_history.status in ('error', 'failed')", sql)
+            self.assertIn("run_history.status in ('error', 'failed')", sql)
+
+    async def test_per_workflow_history_without_status_filter_does_not_narrow_by_status(
+        self,
+    ) -> None:
+        workflow = MagicMock()
+        workflow.name = "Any Workflow"
+        self.db.execute = AsyncMock(
+            side_effect=[
+                _ExecuteResult(scalar_value=0),
+                _ExecuteResult(rows=[]),
+            ]
+        )
+
+        with patch(
+            "app.api.workflows.get_workflow_for_user",
+            AsyncMock(return_value=workflow),
+        ):
+            await get_execution_history(
+                workflow_id=uuid.uuid4(),
+                current_user=self.user,
+                db=self.db,
+                trigger_source=None,
+                execution_status="   ",
+            )
+
+        total_sql = _compile_sql(self.db.execute.call_args_list[0].args[0])
+        history_sql = _compile_sql(self.db.execute.call_args_list[1].args[0])
+
+        self.assertNotIn("execution_history.status =", total_sql)
+        self.assertNotIn("execution_history.status =", history_sql)
+
     async def test_collaborator_bulk_clear_preserves_shared_workflow_history(self) -> None:
         collaborator_id = uuid.uuid4()
         self.db.execute = AsyncMock(side_effect=[_DeleteResult(0), _DeleteResult(0)])

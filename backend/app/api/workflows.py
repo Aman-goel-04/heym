@@ -15,8 +15,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import String, case, cast, func, literal, null, or_, select, text, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.sql import Select
+from sqlalchemy.orm.attributes import InstrumentedAttribute, flag_modified
+from sqlalchemy.sql import ColumnElement, Select
 
 from app.api.analytics import upsert_workflow_analytics_snapshot
 from app.api.deps import get_client_ip, get_current_user, get_current_user_optional
@@ -1037,8 +1037,9 @@ async def list_all_execution_history(
     if trigger_source:
         exec_subq = exec_subq.where(ExecutionHistory.trigger_source == trigger_source)
     exec_subq = apply_instance_filter(exec_subq, instance_id)
-    if execution_status:
-        exec_subq = exec_subq.where(ExecutionHistory.status == execution_status)
+    exec_status_clause = history_status_clause(ExecutionHistory.status, execution_status)
+    if exec_status_clause is not None:
+        exec_subq = exec_subq.where(exec_status_clause)
     if search:
         pattern = f"%{search}%"
         exec_subq = exec_subq.where(
@@ -1077,8 +1078,9 @@ async def list_all_execution_history(
         ).where(RunHistory.user_id == current_user.id)
         if trigger_source:
             run_subq = run_subq.where(RunHistory.trigger_source == trigger_source)
-        if execution_status:
-            run_subq = run_subq.where(RunHistory.status == execution_status)
+        run_status_clause = history_status_clause(RunHistory.status, execution_status)
+        if run_status_clause is not None:
+            run_subq = run_subq.where(run_status_clause)
         if search:
             pattern = f"%{search}%"
             run_subq = run_subq.where(
@@ -3572,6 +3574,30 @@ async def stream_workflow_execution_history_entry(
     )
 
 
+# A recovery that could not re-run a run after a restart stores "failed". To a reader that
+# is the same outcome as "error", so the Error filter returns both.
+_HISTORY_STATUS_GROUPS: dict[str, tuple[str, ...]] = {"error": ("error", "failed")}
+
+
+def history_status_clause(
+    column: InstrumentedAttribute, execution_status: object
+) -> ColumnElement | None:
+    """Build the WHERE clause for a history status filter, or None for "no filter".
+
+    Anything that is not a non-blank string means "no filter": tests call the endpoint
+    functions directly, where FastAPI has not resolved ``Query(default=None)``.
+    """
+    if not isinstance(execution_status, str):
+        return None
+    cleaned = execution_status.strip()
+    if not cleaned:
+        return None
+    statuses = _HISTORY_STATUS_GROUPS.get(cleaned, (cleaned,))
+    if len(statuses) == 1:
+        return column == statuses[0]
+    return column.in_(statuses)
+
+
 def filters_to_workflow_runs(instance_id: str | None) -> bool:
     """Whether an instance filter is set, which excludes non-workflow runs."""
     return isinstance(instance_id, str) and bool(instance_id.strip())
@@ -3605,6 +3631,7 @@ async def get_execution_history(
     search: str | None = None,
     trigger_source: str | None = Query(default=None),
     instance_id: str | None = Query(default=None),
+    execution_status: str | None = Query(default=None, alias="status"),
 ) -> HistoryListResponse:
     """List workflow execution history (lightweight, paginated)."""
     workflow = await get_workflow_for_user(db, workflow_id, current_user.id)
@@ -3613,11 +3640,14 @@ async def get_execution_history(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workflow not found",
         )
+    status_clause = history_status_clause(ExecutionHistory.status, execution_status)
     total_query = (
         select(func.count())
         .select_from(ExecutionHistory)
         .where(ExecutionHistory.workflow_id == workflow_id)
     )
+    if status_clause is not None:
+        total_query = total_query.where(status_clause)
     if trigger_source:
         total_query = total_query.where(ExecutionHistory.trigger_source == trigger_source)
     if search:
@@ -3636,6 +3666,8 @@ async def get_execution_history(
     total = total_result.scalar() or 0
     history_query = select(ExecutionHistory).where(ExecutionHistory.workflow_id == workflow_id)
     history_query = apply_instance_filter(history_query, instance_id)
+    if status_clause is not None:
+        history_query = history_query.where(status_clause)
     if trigger_source:
         history_query = history_query.where(ExecutionHistory.trigger_source == trigger_source)
     if search:
