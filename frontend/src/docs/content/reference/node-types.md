@@ -97,6 +97,7 @@ See [Triggers](./triggers.md) for all entry points.
 | [Sticky Note](../nodes/sticky-note-node.md) | Add markdown notes to the canvas (not executed) | 0 | 0 |
 | [Console Log](../nodes/console-log-node.md) | Log to backend console | 1 | 1 |
 | [Disable Node](../nodes/disable-node.md) | Disable another node in the workflow | 1 | 1 |
+| [Enable Node](../nodes/enable-node.md) | Enable a disabled node in the workflow | 1 | 1 |
 | [Throw Error](../nodes/throw-error-node.md) | Stop workflow with error response | 1 | 0 |
 
 ## Plugin Nodes

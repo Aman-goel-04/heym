@@ -26,6 +26,7 @@ _HANDLER_MODULES: dict[str, str] = {
     "discord": "discord_node",
     "discordTrigger": "discord_trigger_node",
     "drive": "drive_node",
+    "enableNode": "enable_node_node",
     "errorHandler": "error_handler_node",
     "execute": "execute_node",
     "fileUploadTrigger": "file_upload_trigger_node",

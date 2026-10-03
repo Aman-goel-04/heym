@@ -352,11 +352,11 @@ describe("shipped release registry", () => {
     const catalog = buildReleaseTourCatalog(RELEASE_REGISTRY);
 
     expect(catalog?.slides.map((slide) => slide.id)).toEqual([
+      "enable-node",
       "dashboard-hitl",
       "assistant-data-tables",
       "assistant-yolo-mode",
       "dashboard-sharing",
-      "evals-judge",
     ]);
   });
 
@@ -371,6 +371,7 @@ describe("shipped release registry", () => {
 
     expect(tours.map((tour) => tour.tourVisual)).toContain("assistant-yolo-mode");
     expect(tours.map((tour) => tour.tourVisual)).toContain("assistant-data-tables");
+    expect(tours.map((tour) => tour.tourVisual)).toContain("enable-node");
     for (const tour of tours) {
       expect(TOUR_VISUALS[tour.tourVisual], `missing visual for "${tour.tourVisual}"`)
         .toBeDefined();

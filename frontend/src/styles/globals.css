@@ -84,6 +84,7 @@
     --node-loop: 252 87% 62%;
     --node-wait: 25 95% 53%;
     --node-disable: 0 0% 45%;
+    --node-enable: 142 76% 36%;
     --node-redis: 0 85% 52%;
     --node-rag: 252 87% 62%;
     --node-decision: 300 75% 48%;
@@ -182,6 +183,7 @@
     --node-loop: 252 87% 67%;
     --node-wait: 25 95% 58%;
     --node-disable: 0 0% 50%;
+    --node-enable: 142 71% 45%;
     --node-redis: 0 83% 58%;
     --node-rag: 252 87% 67%;
     --node-decision: 300 75% 62%;

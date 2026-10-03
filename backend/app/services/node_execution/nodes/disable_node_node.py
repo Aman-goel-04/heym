@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from app.services.node_execution.base import NodeExecutionContext
+from app.services.node_execution.node_activation import (
+    find_node_id_by_label,
+    persist_node_active_flag,
+)
 
 
 def execute(ctx: NodeExecutionContext) -> object:
@@ -12,12 +16,7 @@ def execute(ctx: NodeExecutionContext) -> object:
     if not target_node_label:
         raise ValueError("disableNode requires a targetNodeLabel")
 
-    target_node_id = None
-    for nid, n in self.nodes.items():
-        if n.get("data", {}).get("label") == target_node_label:
-            target_node_id = nid
-            break
-
+    target_node_id = find_node_id_by_label(self.nodes, target_node_label)
     if not target_node_id:
         raise ValueError(f"Target node with label '{target_node_label}' not found")
 
@@ -26,23 +25,7 @@ def execute(ctx: NodeExecutionContext) -> object:
     with self.lock:
         self.skipped_nodes.add(target_node_id)
 
-    if self.workflow_id:
-        from sqlalchemy.orm.attributes import flag_modified
-
-        from app.db.models import Workflow
-        from app.db.session import SessionLocal
-
-        with SessionLocal() as db:
-            workflow = db.query(Workflow).filter(Workflow.id == self.workflow_id).first()
-            if workflow:
-                updated_nodes = []
-                for wf_node in workflow.nodes:
-                    if wf_node.get("data", {}).get("label") == target_node_label:
-                        wf_node["data"]["active"] = False
-                    updated_nodes.append(wf_node)
-                workflow.nodes = updated_nodes
-                flag_modified(workflow, "nodes")
-                db.commit()
+    persist_node_active_flag(self.workflow_id, target_node_label, False)
 
     output = {
         "targetNode": target_node_label,

@@ -68,6 +68,7 @@ const nodeColorMap = {
   variable: "node-variable",
   loop: "node-loop",
   disableNode: "node-disable",
+  enableNode: "node-enable",
   redis: "node-redis",
   rag: "node-rag",
   decision: "node-decision",

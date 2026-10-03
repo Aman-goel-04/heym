@@ -39,6 +39,7 @@ NODE_PLACEMENT: dict[str, Placement] = {
     "discord": _ANY,
     "discordTrigger": _ANY,
     "drive": _MAIN,
+    "enableNode": _ANY,
     "errorHandler": _ANY,
     "execute": _ANY,
     "fileUploadTrigger": _MAIN,

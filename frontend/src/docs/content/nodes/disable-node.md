@@ -19,7 +19,7 @@ The **Disable Node** node permanently disables another node in the workflow. Whe
 
 ## Use Case
 
-Disable a [Cron](./cron-node.md) trigger after a condition is met so it no longer runs in future workflow executions.
+Disable a [Cron](./cron-node.md) trigger after a condition is met so it no longer runs in future workflow executions. Turn it back on later with [Enable Node](./enable-node.md).
 
 ## Example
 
@@ -38,5 +38,6 @@ Flow: Cron → HTTP check → Condition (status complete?) → if true: Disable 
 ## Related
 
 - [Node Types](../reference/node-types.md) – Overview of all node types
+- [Enable Node](./enable-node.md) – Turn a disabled node back on
 - [Cron Node](./cron-node.md) – Trigger to disable
 - [Condition Node](./condition-node.md) – Branch before disabling

@@ -93,6 +93,7 @@ export const DOCS_MANIFEST: Record<string, DocCategory> = {
       { slug: "sticky-note-node", title: "Sticky Note" },
       { slug: "console-log-node", title: "Console Log" },
       { slug: "disable-node", title: "Disable Node" },
+      { slug: "enable-node", title: "Enable Node" },
       { slug: "throw-error-node", title: "Throw Error" },
       { slug: "error-handler-node", title: "Error Handler" },
     ],

@@ -1529,7 +1529,7 @@ export const useWorkflowStore = defineStore("workflow", () => {
             replaceLiveRunningNodeResult(row);
 
             if (
-              data.node_type === "disableNode" &&
+              (data.node_type === "disableNode" || data.node_type === "enableNode") &&
               data.status === "success" &&
               data.output?.targetNode
             ) {
@@ -1537,7 +1537,10 @@ export const useWorkflowStore = defineStore("workflow", () => {
                 (n) => n.data.label === data.output.targetNode,
               );
               if (targetNode) {
-                targetNode.data = { ...targetNode.data, active: false };
+                targetNode.data = {
+                  ...targetNode.data,
+                  active: data.node_type === "enableNode",
+                };
               }
             }
           },
@@ -2540,7 +2543,7 @@ export const useWorkflowStore = defineStore("workflow", () => {
         }
       }
 
-      if (node.type === "disableNode") {
+      if (node.type === "disableNode" || node.type === "enableNode") {
         if (
           !node.data.targetNodeLabel ||
           node.data.targetNodeLabel.trim() === ""
@@ -2548,7 +2551,7 @@ export const useWorkflowStore = defineStore("workflow", () => {
           errors.push({
             nodeId: node.id,
             nodeLabel: node.data.label,
-            nodeType: "Disable Node",
+            nodeType: node.type === "disableNode" ? "Disable Node" : "Enable Node",
             message: "Target node is not selected",
           });
         }

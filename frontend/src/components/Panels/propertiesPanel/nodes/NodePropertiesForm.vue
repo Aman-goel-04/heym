@@ -33,6 +33,7 @@ import WaitNodeProperties from "./WaitNodeProperties.vue";
 import VariableNodeProperties from "./VariableNodeProperties.vue";
 import LoopNodeProperties from "./LoopNodeProperties.vue";
 import DisableNodeNodeProperties from "./DisableNodeNodeProperties.vue";
+import EnableNodeNodeProperties from "./EnableNodeNodeProperties.vue";
 import RedisNodeProperties from "./RedisNodeProperties.vue";
 import DecisionNodeProperties from "./DecisionNodeProperties.vue";
 import RagNodeProperties from "./RagNodeProperties.vue";
@@ -101,6 +102,7 @@ const { selectedNode } = usePropertiesPanelContext();
   <VariableNodeProperties v-else-if="selectedNode?.type === 'variable'" />
   <LoopNodeProperties v-else-if="selectedNode?.type === 'loop'" />
   <DisableNodeNodeProperties v-else-if="selectedNode?.type === 'disableNode'" />
+  <EnableNodeNodeProperties v-else-if="selectedNode?.type === 'enableNode'" />
   <RedisNodeProperties v-else-if="selectedNode?.type === 'redis'" />
   <RagNodeProperties v-else-if="selectedNode?.type === 'rag'" />
   <DecisionNodeProperties v-else-if="selectedNode?.type === 'decision'" />

@@ -609,6 +609,19 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
       targetNodeLabel: "",
     },
   },
+  enableNode: {
+    type: "enableNode",
+    label: "Enable Node",
+    description: "Enable a disabled node in the workflow",
+    color: "node-enable",
+    icon: "CircleCheck",
+    inputs: 1,
+    outputs: 1,
+    defaultData: {
+      label: "enableNode",
+      targetNodeLabel: "",
+    },
+  },
   redis: {
     type: "redis",
     label: "Redis",

@@ -30,6 +30,7 @@ import { getLinearExpressionFields, type LinearExpressionFieldKey } from "@/lib/
 import { getNotionExpressionFields, type NotionExpressionFieldKey } from "@/lib/notionExpressionFields";
 import { getSentryExpressionFields, type SentryExpressionFieldKey } from "@/lib/sentryExpressionFields";
 import { nodeIcons } from "@/lib/nodeIcons";
+import { WAIT_MAX_DURATION_MS } from "@/lib/waitNode";
 import { parseWebhookJson, stringifyWebhookJson } from "@/lib/webhookBody";
 import { configApi, credentialsApi, dataTablesApi, filesApi, gristApi, mcpApi, workflowApi } from "@/services/api";
 import type { MCPFetchToolItem } from "@/services/api";
@@ -131,6 +132,7 @@ export function usePropertiesPanelController() {
     variable: "node-variable",
     loop: "node-loop",
     disableNode: "node-disable",
+    enableNode: "node-enable",
     redis: "node-redis",
     rag: "node-rag",
     decision: "node-decision",
@@ -196,6 +198,7 @@ export function usePropertiesPanelController() {
     variable: "variable-node",
     loop: "loop-node",
     disableNode: "disable-node",
+    enableNode: "enable-node",
     redis: "redis-node",
     rag: "rag-node",
     decision: "decision-node",
@@ -8703,7 +8706,8 @@ export function usePropertiesPanelController() {
 
   function handleDurationChange(value: string | number): void {
     const numValue = typeof value === "string" ? parseInt(value, 10) : value;
-    const validValue = isNaN(numValue) || numValue < 1 ? 1 : Math.min(numValue, 60000);
+    const validValue =
+      isNaN(numValue) || numValue < 1 ? 1 : Math.min(numValue, WAIT_MAX_DURATION_MS);
     updateNodeData("duration", validValue);
   }
 

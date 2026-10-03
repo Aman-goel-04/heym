@@ -4,7 +4,7 @@ import AssistantDataTablesTourVisual from "@/features/release-tour/components/vi
 import AssistantYoloTourVisual from "@/features/release-tour/components/visuals/AssistantYoloTourVisual.vue";
 import DashboardHitlTourVisual from "@/features/release-tour/components/visuals/DashboardHitlTourVisual.vue";
 import DashboardSharingTourVisual from "@/features/release-tour/components/visuals/DashboardSharingTourVisual.vue";
-import EvalsJudgeTourVisual from "@/features/release-tour/components/visuals/EvalsJudgeTourVisual.vue";
+import EnableNodeTourVisual from "@/features/release-tour/components/visuals/EnableNodeTourVisual.vue";
 import FallbackTourVisual from "@/features/release-tour/components/visuals/FallbackTourVisual.vue";
 
 /** Maps a section's `tourVisual` key to the mock UI that demonstrates it. */
@@ -13,7 +13,7 @@ export const TOUR_VISUALS: Record<string, Component> = {
   "assistant-yolo-mode": AssistantYoloTourVisual,
   "dashboard-hitl": DashboardHitlTourVisual,
   "dashboard-sharing": DashboardSharingTourVisual,
-  "evals-judge": EvalsJudgeTourVisual,
+  "enable-node": EnableNodeTourVisual,
 };
 
 export function resolveTourVisual(key: string): Component {
