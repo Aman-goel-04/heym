@@ -1364,7 +1364,7 @@ Do NOT use downstream nodes that depend on `$notifyWorkflow.outputs` when `execu
 - **Inputs**: 1 | **Outputs**: 1
 - **Data fields**:
   - `label`: Node identifier
-  - `duration`: Milliseconds to wait (e.g., 1000 for 1 second)
+  - `duration`: Milliseconds to wait (e.g., 1000 for 1 second). Range 1-900000: the maximum is 15 minutes (900000 ms)
 
 ### 11. http (HTTP Request) - CAN BE A STARTING POINT!
 - **Purpose**: Make HTTP requests using cURL syntax
@@ -2029,7 +2029,7 @@ The last node in the iteration body MUST connect BACK to the loop node's `loop` 
   - `label`: Node identifier
   - `targetNodeLabel`: The label of the node to disable (e.g., "cronTrigger")
 
-**⚠️ USE CASE**: Perfect for one-time operations like disabling a cron trigger after a condition is met. Once disabled, the target node will not execute in future workflow runs.
+**⚠️ USE CASE**: Perfect for one-time operations like disabling a cron trigger after a condition is met. Once disabled, the target node will not execute in future workflow runs. Use `enableNode` to turn it back on.
 
 **disableNode Output Format**:
 ```json
@@ -2066,6 +2066,48 @@ The last node in the iteration body MUST connect BACK to the loop node's `loop` 
 4. If true: disableNode disables the cron trigger, then output confirms
 5. If false: output says still waiting
 6. After disable runs, the cron node's `active` becomes `false` and it won't trigger anymore
+
+### 20b. enableNode (Enable Another Node)
+- **Purpose**: Turn a disabled node back on. When executed, sets the target node's `active` to `true` and updates the workflow in the database. The counterpart of `disableNode`.
+- **Inputs**: 1 | **Outputs**: 1
+- **Data fields**:
+  - `label`: Node identifier
+  - `targetNodeLabel`: The label of the node to enable (e.g., "cronTrigger")
+
+**⚠️ USE CASE**: Re-arm a node that was disabled, either by `disableNode` or by switching it off on the canvas (`"active": false` in its data). Typical case: a cron trigger that stays off until another entry point, such as a webhook, enables it. A disabled trigger never starts a run, so the `enableNode` must sit behind an entry point that can run. If the target is downstream of the `enableNode` and has not run yet, it also runs in the current execution.
+
+**enableNode Output Format**:
+```json
+{
+  "targetNode": "cronTrigger",
+  "enabled": true
+}
+```
+
+**Example - Arm a Disabled Cron From a Webhook**:
+```json
+{
+  "nodes": [
+    {"id": "input_1", "type": "textInput", "position": {"x": 100, "y": 50}, "data": {"label": "userInput"}},
+    {"id": "enable_1", "type": "enableNode", "position": {"x": 350, "y": 50}, "data": {"label": "startCron", "targetNodeLabel": "hourlyCheck"}},
+    {"id": "output_1", "type": "output", "position": {"x": 600, "y": 50}, "data": {"label": "armedOutput", "message": "Hourly check enabled"}},
+    {"id": "cron_1", "type": "cron", "position": {"x": 100, "y": 250}, "data": {"label": "hourlyCheck", "cronExpression": "0 * * * *", "active": false}},
+    {"id": "http_1", "type": "http", "position": {"x": 350, "y": 250}, "data": {"label": "checkApi", "curl": "curl -X GET https://api.example.com/status"}},
+    {"id": "output_2", "type": "output", "position": {"x": 600, "y": 250}, "data": {"label": "checkOutput", "message": "$checkApi.body.status"}}
+  ],
+  "edges": [
+    {"id": "edge_1", "source": "input_1", "target": "enable_1"},
+    {"id": "edge_2", "source": "enable_1", "target": "output_1"},
+    {"id": "edge_3", "source": "cron_1", "target": "http_1"},
+    {"id": "edge_4", "source": "http_1", "target": "output_2"}
+  ]
+}
+```
+**Flow explanation**:
+1. The cron node is saved with `"active": false`, so it never triggers on its own
+2. A request to the webhook runs `userInput` and then `enableNode`
+3. `enableNode` sets the cron node's `active` to `true` and saves it
+4. From the next scheduler pass the cron node triggers hourly; use `disableNode` to stop it again
 
 ### 21. redis (Redis Operations)
 - **Purpose**: Perform Redis operations (set, get, check key existence, delete)

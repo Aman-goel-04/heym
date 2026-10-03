@@ -376,7 +376,7 @@ The node library brings agents together with deterministic logic, triggers, data
 | **AI** | LLM, Agent, RAG, Codex, OpenCode Go |
 | **Logic** | Condition, Switch, Loop, Merge |
 | **Data** | Set, Variable, DataTable, Execute (sub-workflow), Converter |
-| **Output and utilities** | Output, Chart Output, JSON/HTML Output Mapper, Wait, Console Log, Error Handler, Throw Error, Disable Node, Sticky Note |
+| **Output and utilities** | Output, Chart Output, JSON/HTML Output Mapper, Wait, Console Log, Error Handler, Throw Error, Disable Node, Enable Node, Sticky Note |
 
 Heym Drive stores uploaded and generated files with public or password-protected share links, team sharing, and bulk ZIP, share, and delete actions. See [Drive](frontend/src/docs/content/reference/drive.md).
 

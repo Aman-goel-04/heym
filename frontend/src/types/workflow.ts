@@ -192,6 +192,7 @@ export type NodeType =
   | "variable"
   | "loop"
   | "disableNode"
+  | "enableNode"
   | "redis"
   | "rag"
   | "decision"

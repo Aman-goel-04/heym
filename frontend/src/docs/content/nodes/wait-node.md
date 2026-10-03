@@ -15,7 +15,7 @@ The **Wait** node pauses workflow execution for a specified duration. Use it for
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `label` | string | Node identifier (camelCase) |
-| `duration` | number | Delay in milliseconds (e.g. 1000 = 1 second) |
+| `duration` | number | Delay in milliseconds (e.g. 1000 = 1 second). The editor accepts 1 to 900000 (15 minutes) |
 
 ## Example
 

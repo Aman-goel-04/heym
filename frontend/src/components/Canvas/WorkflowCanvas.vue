@@ -1125,6 +1125,7 @@ function getDefaultNodeData(type: NodeType): WorkflowNode["data"] {
     variable: { label: "variable", variableName: "myVariable", variableValue: "$input.text", variableType: "auto", isGlobal: false },
     loop: { label: "loop", arrayExpression: "$input.items" },
     disableNode: { label: "disableNode", targetNodeLabel: "" },
+    enableNode: { label: "enableNode", targetNodeLabel: "" },
     redis: { label: "redis", credentialId: "", redisOperation: undefined, redisKey: "$input.text", redisValue: "$input.text" },
     decision: {
       label: "decision",

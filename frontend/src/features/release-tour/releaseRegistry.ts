@@ -17,6 +17,53 @@ import type { ReleaseEntry } from "@/features/release-tour/releaseTour.types";
  */
 export const RELEASE_REGISTRY: ReleaseEntry[] = [
   {
+    releaseId: "2026.18",
+    publishedAt: new Date("2026-10-03T12:00:00Z"),
+    headline: "Switch a node back on from inside a workflow",
+    releaseTour: {
+      label: "New in Heym",
+      introTitle: "New in this release",
+      introDescription:
+        "A quick look at what changed since your last update. Takes about a minute.",
+      tourEnabled: true,
+      sectionOrder: ["enable-node"],
+    },
+    sections: [
+      {
+        id: "enable-node",
+        title: "Enable Node: switch a node back on from inside a workflow",
+        publishedAt: new Date("2026-10-03T12:00:00Z"),
+        blocks: [
+          {
+            type: "prose",
+            markdown:
+              "The new **Enable Node** is the counterpart of **Disable Node**. Pick a node by label and it turns that node back on and saves the change, so a **Cron** trigger you switched off fires again at its next scheduled time. If the node sits downstream and has not run yet, it also runs in the current execution.",
+          },
+          {
+            type: "prose",
+            markdown:
+              "A switched-off trigger never starts a run by itself, so put the Enable Node behind another entry point, such as an **Input** trigger. The **Wait** node also takes longer pauses now: up to 15 minutes instead of one.",
+          },
+        ],
+        tour: {
+          description:
+            "Turn a disabled node back on from inside a workflow, for example a Cron trigger that was switched off.",
+          useCases: [
+            "Start a disabled Cron trigger on demand from a webhook",
+            "Pair it with Disable Node to switch a node off and on as conditions change",
+            "Pause a workflow for up to 15 minutes with the Wait node",
+          ],
+          tourVisual: "enable-node",
+          docTarget: {
+            categoryId: "nodes",
+            slug: "enable-node",
+            title: "Enable Node",
+          },
+        },
+      },
+    ],
+  },
+  {
     releaseId: "2026.17",
     publishedAt: new Date("2026-09-28T18:00:00Z"),
     headline: "Review pending human approvals from the dashboard",
@@ -140,48 +187,16 @@ export const RELEASE_REGISTRY: ReleaseEntry[] = [
   {
     releaseId: "2026.15",
     publishedAt: new Date("2026-09-23T00:00:00Z"),
-    headline: "Give your evals an independent judge, and share your dashboards",
+    headline: "Keep several dashboards and share them with your team",
     releaseTour: {
       label: "New in Heym",
       introTitle: "New in this release",
       introDescription:
         "A quick look at what changed since your last update. Takes about a minute.",
       tourEnabled: true,
-      sectionOrder: ["evals-judge", "dashboard-sharing"],
+      sectionOrder: ["dashboard-sharing"],
     },
     sections: [
-      {
-        id: "evals-judge",
-        title: "Give your evals an independent judge",
-        publishedAt: new Date("2026-09-23T12:00:00Z"),
-        blocks: [
-          {
-            type: "prose",
-            markdown:
-              "**LLM-as-Judge** in the **Evals** tab can now hand scoring to a separate judge. Pick an OpenAI, OpenAI compatible, Gemini or **Decision Model** credential and type the judge's model. Each model answers the test input on its own, then the judge rates how closely that answer matches the expected output from 0 to 100. A decision model such as `jev-latest` computes that score from a probability distribution instead of writing a number about the answer.",
-          },
-          {
-            type: "prose",
-            markdown:
-              "Temperature and reasoning effort leave the panel in this mode, so it only shows what the run uses. Every run keeps its judge: the history list names it, opening a past run loads it back for **Re-Run Evals**, and **Export** includes it. Leave the judge empty and each model scores its own answer, as before.",
-          },
-        ],
-        tour: {
-          description:
-            "Score eval answers with a separate model or a decision model instead of asking each model to grade its own work.",
-          useCases: [
-            "Compare models on one suite with a single independent judge",
-            "See which judge scored a past run in the history list and the export",
-            "Re-run a past evaluation with the same judge in one click",
-          ],
-          tourVisual: "evals-judge",
-          docTarget: {
-            categoryId: "tabs",
-            slug: "evals-tab",
-            title: "Evals",
-          },
-        },
-      },
       {
         id: "dashboard-sharing",
         title: "Keep several dashboards and share them with your team",

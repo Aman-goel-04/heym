@@ -2744,7 +2744,7 @@ def _build_workflow_content_summary(workflow: Workflow) -> dict[str, Any]:
         elif node_type == "wait":
             duration = data.get("duration")
             if duration is not None:
-                entry["duration_seconds"] = duration
+                entry["duration_ms"] = duration
         elif node_type == "sendEmail":
             to_addr = data.get("to") or ""
             if to_addr:

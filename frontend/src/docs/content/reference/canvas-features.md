@@ -75,6 +75,8 @@ When multiple nodes are selected, Enable/Disable applies to all of them. The con
 
 Nodes with `active: false` are skipped. Downstream nodes receive no data from skipped nodes. Use this to temporarily exclude nodes without deleting them.
 
+To switch a node on or off from inside a workflow instead of by hand, use [Disable Node](../nodes/disable-node.md) and [Enable Node](../nodes/enable-node.md).
+
 ## Agent memory graph
 
 [Agent](../nodes/agent-node.md) nodes with **[persistent memory](./agent-persistent-memory.md)** enabled show a pink **brain** control on the node. Click it to open the memory graph editor: entities render as an animated, force-directed graph clustered by entity type, with searchable Source/Target pickers for adding relationships and a connections panel for jumping between linked entities. The same dialog includes **Share memory with other agents** (workflow → agent → read or read/write) for [cross-agent memory sharing](./agent-persistent-memory.md#sharing-with-other-agents). While the dialog is open, main canvas undo/redo is deferred so graph editing keeps its own history.

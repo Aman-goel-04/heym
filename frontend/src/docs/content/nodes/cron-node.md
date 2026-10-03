@@ -53,3 +53,4 @@ Standard 5-field cron: `minute hour day-of-month month day-of-week`
 - [Node Types](../reference/node-types.md) – Overview of all node types
 - [Triggers](../reference/triggers.md) – Cron, Input, RabbitMQ
 - [Disable Node](./disable-node.md) – Stop a cron trigger after a condition
+- [Enable Node](./enable-node.md) – Start a disabled cron trigger again
