@@ -40,6 +40,12 @@ class ImapCursor:
     last_uid: int = 0
 
 
+class ImapDispatchNotStartedError(Exception):
+    """Raised when preparing a workflow run for an IMAP email fails before
+    dispatch_workflow is invoked, so no side effects occurred yet and the
+    attempt is safe to retry."""
+
+
 def _decode_header_value(value: str | None) -> str:
     """Decode MIME-encoded header values into readable Unicode strings."""
     if not value:
@@ -220,6 +226,8 @@ def fetch_imap_messages(
         for uid in new_uids:
             fetch_status, fetch_data = client.uid("fetch", str(uid), "(RFC822)")
             if fetch_status != "OK" or not isinstance(fetch_data, list):
+                # Known limitation: a per-UID fetch failure is skipped rather than
+                # retried, so it can still permanently lose that one email.
                 logger.warning("Failed to fetch IMAP message uid=%s", uid)
                 continue
             raw_bytes = _extract_raw_message_bytes(fetch_data)
@@ -247,6 +255,7 @@ class ImapTriggerManager:
         self._last_poll_at: dict[str, datetime] = {}
         self._cursors: dict[str, ImapCursor] = {}
         self._poll_loop_seconds = 15
+        self._max_pre_dispatch_attempts = 3
 
     def _get_node_key(self, workflow_id: uuid.UUID, node_id: str) -> str:
         return f"{workflow_id}_{node_id}"
@@ -363,9 +372,11 @@ class ImapTriggerManager:
         key = self._get_node_key(workflow.id, node_id)
         current_cursor = self._cursors.get(key, ImapCursor())
         next_cursor, emails = await self._fetch_node_messages(credential_config, current_cursor)
-        self._cursors[key] = next_cursor
 
         if not emails:
+            # Still apply the returned cursor on an empty batch: it carries the
+            # first-poll baseline and any UIDVALIDITY reset.
+            self._cursors[key] = next_cursor
             return
 
         logger.info(
@@ -375,7 +386,51 @@ class ImapTriggerManager:
             node_id,
         )
         for email_payload in emails:
-            await self._execute_workflow_for_email(workflow, node_id, email_payload)
+            await self._process_email_with_retries(workflow, node_id, email_payload)
+
+        self._cursors[key] = next_cursor
+
+    async def _process_email_with_retries(
+        self, workflow: Workflow, node_id: str, email_payload: dict[str, Any]
+    ) -> None:
+        """Run one email through the workflow, retrying only failures that happen
+        before dispatch_workflow starts. Once a run has started it is never
+        retried, since retrying would repeat whatever side effects it already had."""
+        uid = email_payload.get("uid")
+        for attempt in range(1, self._max_pre_dispatch_attempts + 1):
+            try:
+                await self._execute_workflow_for_email(workflow, node_id, email_payload)
+                return
+            except ImapDispatchNotStartedError as exc:
+                if attempt >= self._max_pre_dispatch_attempts:
+                    logger.error(
+                        "IMAP trigger giving up on uid=%s for workflow %s node %s "
+                        "after %d attempts: %s",
+                        uid,
+                        workflow.id,
+                        node_id,
+                        attempt,
+                        exc,
+                    )
+                    return
+                logger.warning(
+                    "Retrying IMAP uid=%s for workflow %s node %s (attempt %d/%d): %s",
+                    uid,
+                    workflow.id,
+                    node_id,
+                    attempt,
+                    self._max_pre_dispatch_attempts,
+                    exc,
+                )
+            except Exception:
+                logger.exception(
+                    "IMAP trigger workflow execution failed after dispatch started for "
+                    "uid=%s (workflow %s node %s); not retrying",
+                    uid,
+                    workflow.id,
+                    node_id,
+                )
+                return
 
     async def _load_credential_config(self, credential_id: str) -> dict[str, Any] | None:
         try:
@@ -417,30 +472,39 @@ class ImapTriggerManager:
         }
 
         async with async_session_maker() as db:
-            workflow_result = await db.execute(select(Workflow).where(Workflow.id == workflow.id))
-            fresh_workflow = workflow_result.scalar_one_or_none()
-            if not fresh_workflow:
-                logger.warning("Workflow %s disappeared before IMAP execution", workflow.id)
-                return
+            try:
+                workflow_result = await db.execute(
+                    select(Workflow).where(Workflow.id == workflow.id)
+                )
+                fresh_workflow = workflow_result.scalar_one_or_none()
+                if not fresh_workflow:
+                    logger.warning("Workflow %s disappeared before IMAP execution", workflow.id)
+                    return
 
-            workflow_cache = await collect_referenced_workflows(
-                db, fresh_workflow.nodes, actor_user_id=fresh_workflow.owner_id
-            )
-            credentials_context = await get_credentials_context(db, fresh_workflow.owner_id)
-            global_variables_context = await get_global_variables_context(
-                db, fresh_workflow.owner_id
-            )
+                workflow_cache = await collect_referenced_workflows(
+                    db, fresh_workflow.nodes, actor_user_id=fresh_workflow.owner_id
+                )
+                credentials_context = await get_credentials_context(db, fresh_workflow.owner_id)
+                global_variables_context = await get_global_variables_context(
+                    db, fresh_workflow.owner_id
+                )
 
-            from app.services.execution_cancellation import clear_execution, register_execution
+                from app.services.execution_cancellation import (
+                    clear_execution,
+                    register_execution,
+                )
 
-            execution_id = uuid.uuid4()
-            cancel_event = register_execution(
-                workflow_id=fresh_workflow.id,
-                execution_id=execution_id,
-                inputs=inputs,
-                trigger_source="imap",
-                actor_user_id=fresh_workflow.owner_id,
-            )
+                execution_id = uuid.uuid4()
+                cancel_event = register_execution(
+                    workflow_id=fresh_workflow.id,
+                    execution_id=execution_id,
+                    inputs=inputs,
+                    trigger_source="imap",
+                    actor_user_id=fresh_workflow.owner_id,
+                )
+            except Exception as exc:
+                raise ImapDispatchNotStartedError(str(exc)) from exc
+
             try:
                 result = await dispatch_workflow(
                     workflow_id=fresh_workflow.id,

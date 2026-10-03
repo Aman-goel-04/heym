@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.db.models import ExecutionHistory
-from app.services.imap_trigger_service import ImapCursor, ImapTriggerManager
+from app.services.imap_trigger_service import (
+    ImapCursor,
+    ImapDispatchNotStartedError,
+    ImapTriggerManager,
+)
 from app.services.workflow_executor import ExecutionResult, SubWorkflowExecution
 
 
@@ -59,6 +63,69 @@ class ImapTriggerManagerPollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_execute.await_count, 2)
         mock_execute.assert_any_await(workflow, "imap-node", emails[0])
         mock_execute.assert_any_await(workflow, "imap-node", emails[1])
+
+    async def test_poll_workflow_node_applies_cursor_on_empty_batch(self) -> None:
+        manager = ImapTriggerManager()
+        workflow = SimpleNamespace(id=uuid.uuid4())
+        node = {
+            "id": "imap-node",
+            "type": "imapTrigger",
+            "data": {"credentialId": str(uuid.uuid4()), "pollIntervalMinutes": 5},
+        }
+
+        with (
+            patch.object(
+                manager,
+                "_load_credential_config",
+                AsyncMock(return_value={"imap_host": "imap.example.com"}),
+            ),
+            patch.object(
+                manager,
+                "_fetch_node_messages",
+                AsyncMock(return_value=(ImapCursor(uidvalidity="7", last_uid=55), [])),
+            ),
+            patch.object(manager, "_execute_workflow_for_email", AsyncMock()) as mock_execute,
+        ):
+            await manager._poll_workflow_node(workflow, node)
+
+        key = manager._get_node_key(workflow.id, "imap-node")
+        self.assertEqual(manager._cursors[key], ImapCursor(uidvalidity="7", last_uid=55))
+        mock_execute.assert_not_awaited()
+
+
+class ImapTriggerRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_process_email_retries_pre_dispatch_failure_then_succeeds(self) -> None:
+        manager = ImapTriggerManager()
+        workflow = SimpleNamespace(id=uuid.uuid4())
+        email_payload = {"uid": "10"}
+
+        execute_mock = AsyncMock(side_effect=[ImapDispatchNotStartedError("db hiccup"), None])
+        with patch.object(manager, "_execute_workflow_for_email", execute_mock):
+            await manager._process_email_with_retries(workflow, "imap-node", email_payload)
+
+        self.assertEqual(execute_mock.await_count, 2)
+
+    async def test_process_email_gives_up_after_max_pre_dispatch_attempts(self) -> None:
+        manager = ImapTriggerManager()
+        workflow = SimpleNamespace(id=uuid.uuid4())
+        email_payload = {"uid": "10"}
+
+        execute_mock = AsyncMock(side_effect=ImapDispatchNotStartedError("still broken"))
+        with patch.object(manager, "_execute_workflow_for_email", execute_mock):
+            await manager._process_email_with_retries(workflow, "imap-node", email_payload)
+
+        self.assertEqual(execute_mock.await_count, manager._max_pre_dispatch_attempts)
+
+    async def test_process_email_does_not_retry_after_dispatch_started(self) -> None:
+        manager = ImapTriggerManager()
+        workflow = SimpleNamespace(id=uuid.uuid4())
+        email_payload = {"uid": "10"}
+
+        execute_mock = AsyncMock(side_effect=RuntimeError("history write failed"))
+        with patch.object(manager, "_execute_workflow_for_email", execute_mock):
+            await manager._process_email_with_retries(workflow, "imap-node", email_payload)
+
+        execute_mock.assert_awaited_once()
 
 
 class ImapTriggerExecutionHistoryTests(unittest.IsolatedAsyncioTestCase):
@@ -154,6 +221,30 @@ class ImapTriggerExecutionHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parent.inputs["triggered_by"], "imap")
         self.assertEqual(parent.inputs["trigger_node_id"], "imap-node")
         self.assertEqual(parent.inputs["email"]["subject"], "New ticket")
+
+    async def test_pre_dispatch_failure_raises_retriable_error_without_dispatching(self) -> None:
+        manager = ImapTriggerManager()
+        workflow = SimpleNamespace(id=uuid.uuid4(), owner_id=uuid.uuid4())
+
+        db = SimpleNamespace(
+            execute=AsyncMock(side_effect=RuntimeError("db unreachable")),
+        )
+
+        with (
+            patch("app.services.imap_trigger_service.async_session_maker") as mock_session_maker,
+            patch(
+                "app.services.imap_trigger_service.dispatch_workflow", AsyncMock()
+            ) as mock_dispatch,
+        ):
+            mock_session = AsyncMock()
+            mock_session.__aenter__.return_value = db
+            mock_session.__aexit__.return_value = None
+            mock_session_maker.return_value = mock_session
+
+            with self.assertRaises(ImapDispatchNotStartedError):
+                await manager._execute_workflow_for_email(workflow, "imap-node", {"uid": "1"})
+
+        mock_dispatch.assert_not_awaited()
 
 
 if __name__ == "__main__":
