@@ -776,6 +776,108 @@ test("shows the live canvas action after starting a card from its dialog", async
   }
 });
 
+test("blocks dragging a running card into a different column", async ({ page }) => {
+  const wf = await createWorkflow(
+    page,
+    `Board Drag Guard WF ${Date.now()}`,
+    [
+      {
+        id: "wait_board_drag_guard",
+        type: "wait",
+        position: { x: 100, y: 100 },
+        data: { label: "waitBoardDragGuard", duration: 12_000 },
+      },
+      {
+        id: "output_board_drag_guard",
+        type: "output",
+        position: { x: 400, y: 100 },
+        data: { label: "out", message: "drag guard complete" },
+      },
+    ],
+    [
+      {
+        id: "edge_board_drag_guard",
+        source: "wait_board_drag_guard",
+        target: "output_board_drag_guard",
+      },
+    ],
+  );
+
+  let activeExecutionId = "";
+  try {
+    const { boardId, cardId, columns } = await createBoardWithCard(page, "still running");
+    const backlog = columns.find((column) => column.name === "Backlog")!;
+    await page.request.patch(`/api/boards/${boardId}/columns/${backlog.id}`, {
+      data: { workflow_ids: [wf.id] },
+    });
+
+    await page.goto(`/?tab=board&board=${boardId}`);
+    await page.getByTestId(`board-card-${cardId}`).click();
+    await page.getByTestId("card-run-followup").click();
+
+    await expect
+      .poll(async () => {
+        const response = await page.request.get(`/api/boards/${boardId}/cards/${cardId}`);
+        const detail = (await response.json()) as {
+          runs: Array<{ active_execution_id: string | null }>;
+        };
+        activeExecutionId = detail.runs[0]?.active_execution_id ?? "";
+        return activeExecutionId;
+      })
+      .not.toBe("");
+    await page.keyboard.press("Escape");
+
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await page.getByTestId(`board-card-${cardId}`).dispatchEvent("dragstart", { dataTransfer });
+    await page.getByTestId("board-column-Planning").dispatchEvent("drop", { dataTransfer });
+
+    await expect(page.getByRole("alert")).toContainText("still running");
+    await expect(page.getByTestId("board-column-Backlog").getByTestId(`board-card-${cardId}`))
+      .toBeVisible();
+    const state = await (await page.request.get(`/api/boards/${boardId}`)).json();
+    expect((state.cards as ApiCard[]).find((entry) => entry.id === cardId)?.column_id).toBe(
+      backlog.id,
+    );
+  } finally {
+    if (activeExecutionId) {
+      await page.request.post(`/api/workflows/${wf.id}/executions/${activeExecutionId}/cancel`);
+    }
+    await deleteAllBoards(page);
+    await deleteWorkflow(page, wf.id);
+  }
+});
+
+test("disables the Run button while a follow-up round is in flight", async ({ page }) => {
+  const wf = await createSetOutputWorkflow(page);
+  try {
+    const { boardId, cardId } = await createBoardWithCard(page, "double click guard");
+
+    await page.goto(`/?tab=board&board=${boardId}`);
+    await page.getByTestId(`board-card-${cardId}`).click();
+
+    const runRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes(`/cards/${cardId}/run`)) runRequests.push(request.url());
+    });
+
+    const runButton = page.getByTestId("card-run-followup");
+    // Two native clicks dispatched in the same synchronous DOM tick: the first click's
+    // handler sets the in-flight guard before its first await, so the second click's
+    // handler sees it set and returns immediately — this is the actual guard under
+    // test, not a race against how fast Playwright can issue two separate clicks.
+    await runButton.evaluate((el: HTMLButtonElement) => {
+      el.click();
+      el.click();
+    });
+
+    await expect.poll(() => runRequests.length).toBeGreaterThan(0);
+    expect(runRequests.length).toBe(1);
+  } finally {
+    await deleteAllBoards(page);
+    await deleteWorkflow(page, wf.id);
+  }
+});
+
 test("planning runs but waits there — it does not auto-advance", async ({ page }) => {
   const wf = await createSetOutputWorkflow(page);
   try {
