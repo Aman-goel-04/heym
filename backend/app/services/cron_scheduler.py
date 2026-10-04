@@ -21,7 +21,12 @@ from app.services.alerts.evaluator import evaluate_due_alerts
 from app.services.cluster import registry, run_queue
 from app.services.cluster.autoweight import apply_automatic_weighting
 from app.services.cluster.dispatch import dispatch_workflow, log_offloaded_run
-from app.services.cron_slot_state import claim_cron_slot, cleanup_cron_slot_claims
+from app.services.cron_slot_state import (
+    claim_cleanup_slot,
+    claim_cron_slot,
+    cleanup_cron_slot_claims,
+    cleanup_old_cleanup_slot_claims,
+)
 from app.services.distributed_lock import lock_service
 from app.services.global_variables_service import get_global_variables_context
 from app.services.hitl_service import build_default_public_base_url, persist_pending_hitl_execution
@@ -354,10 +359,10 @@ class CronScheduler:
 
         if now.hour == 23 and now.minute >= 59:
             if self._last_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "scheduled_deletion_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="scheduled_deletion_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_scheduled_workflows()
@@ -427,10 +432,10 @@ class CronScheduler:
 
         if now.hour == 2 and now.minute >= 0:
             if self._last_portal_session_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "portal_session_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="portal_session_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_expired_portal_sessions()
@@ -462,10 +467,10 @@ class CronScheduler:
 
         if now.hour == 2 and now.minute >= 0 and now.minute < 30:
             if self._last_workflow_version_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "workflow_version_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="workflow_version_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_old_workflow_versions()
@@ -502,10 +507,10 @@ class CronScheduler:
 
         if now.hour == 3 and now.minute >= 0 and now.minute < 30:
             if self._last_refresh_token_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "refresh_token_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="refresh_token_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_expired_refresh_tokens()
@@ -531,10 +536,10 @@ class CronScheduler:
 
         if now.hour == 3 and now.minute >= 30 and now.minute < 60:
             if self._last_file_access_token_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "file_access_token_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="file_access_token_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_expired_file_access_tokens()
@@ -572,10 +577,10 @@ class CronScheduler:
 
         if now.hour == 4 and now.minute >= 0 and now.minute < 30:
             if self._last_response_cache_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "response_cache_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="response_cache_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_expired_response_cache()
@@ -590,10 +595,10 @@ class CronScheduler:
 
         if now.hour == 4 and now.minute >= 30 and now.minute < 60:
             if self._last_cron_slot_claim_cleanup_date != current_date:
-                can_cleanup = await lock_service.check_cron_execution(
-                    "cron_slot_claim_cleanup",
-                    "cleanup",
-                    current_date,
+                can_cleanup = await claim_cleanup_slot(
+                    job_name="cron_slot_claim_cleanup",
+                    slot_date=current_date,
+                    worker_id=lock_service.worker_id,
                 )
                 if can_cleanup:
                     await self._cleanup_old_cron_slot_claims()
@@ -642,10 +647,14 @@ class CronScheduler:
     async def _cleanup_old_cron_slot_claims(self) -> None:
         async with async_session_maker() as db:
             deleted_count = await cleanup_cron_slot_claims(db)
-            if deleted_count > 0:
+            deleted_cleanup_claims = await cleanup_old_cleanup_slot_claims(db)
+            if deleted_count > 0 or deleted_cleanup_claims > 0:
                 await db.commit()
                 logger.info(
-                    "Cron slot claim cleanup completed: %d old claims deleted", deleted_count
+                    "Cron slot claim cleanup completed: %d old slot claims, "
+                    "%d old cleanup claims deleted",
+                    deleted_count,
+                    deleted_cleanup_claims,
                 )
 
     async def _cleanup_expired_response_cache(self) -> None:

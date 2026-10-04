@@ -1825,6 +1825,28 @@ class CronSlotClaim(Base):
     )
 
 
+class CronCleanupClaim(Base):
+    """One row per (job, date) daily cleanup slot that has already run.
+
+    The scheduler's once-per-day cleanup checks used to guard themselves with a
+    session-scoped Postgres advisory lock that was never released, leaking on the
+    pooled connection for the life of the process. A durable claim row gives the
+    same once-per-day guarantee without holding anything on a connection: the job
+    runs once, whichever worker inserts the row first.
+    """
+
+    __tablename__ = "cron_cleanup_claims"
+    __table_args__ = (UniqueConstraint("job_name", "slot_date", name="uq_cron_cleanup_claim"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    slot_date: Mapped[str] = mapped_column(String(8), nullable=False)
+    claimed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 class HeymEvent(Base):
     """Append-only log of platform events that workflows can subscribe to.
 
