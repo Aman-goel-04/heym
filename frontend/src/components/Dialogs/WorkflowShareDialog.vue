@@ -15,7 +15,14 @@ import Input from "@/components/ui/Input.vue";
 import Label from "@/components/ui/Label.vue";
 import Select from "@/components/ui/Select.vue";
 import UserAvatar from "@/components/ui/UserAvatar.vue";
+import WorkflowShareRevokeDialog from "@/components/Dialogs/WorkflowShareRevokeDialog.vue";
 import { teamsApi, workflowApi } from "@/services/api";
+
+interface PendingRevoke {
+  kind: "user" | "team";
+  id: string;
+  subject: string;
+}
 
 interface Props {
   open: boolean;
@@ -43,6 +50,7 @@ const sharePermissionSaving = ref<string | null>(null);
 const workflowShares = ref<WorkflowShare[]>([]);
 const workflowTeamShares = ref<WorkflowTeamShare[]>([]);
 const teams = ref<Team[]>([]);
+const pendingRevoke = ref<PendingRevoke | null>(null);
 
 const workflowTeamOptions = computed(() => {
   const shared = new Set(workflowTeamShares.value.map((s) => s.team_id));
@@ -123,11 +131,11 @@ async function updateSharePermission(
   }
 }
 
-async function removeShare(userId: string): Promise<void> {
+async function removeShare(userId: string, stopAlerts: boolean): Promise<void> {
   shareRemoving.value = userId;
   shareError.value = "";
   try {
-    await workflowApi.removeShare(props.workflowId, userId);
+    await workflowApi.removeShare(props.workflowId, userId, stopAlerts);
     workflowShares.value = workflowShares.value.filter((share) => share.user_id !== userId);
   } catch (error: unknown) {
     shareError.value = errorMessage(error, "Failed to remove share");
@@ -173,14 +181,28 @@ async function updateTeamSharePermission(
   }
 }
 
-async function removeWorkflowTeamShare(teamId: string): Promise<void> {
+async function removeWorkflowTeamShare(teamId: string, stopAlerts: boolean): Promise<void> {
+  shareRemoving.value = teamId;
   shareError.value = "";
   try {
-    await workflowApi.removeTeamShare(props.workflowId, teamId);
+    await workflowApi.removeTeamShare(props.workflowId, teamId, stopAlerts);
     workflowTeamShares.value = workflowTeamShares.value.filter((s) => s.team_id !== teamId);
   } catch (error: unknown) {
     shareError.value = errorMessage(error, "Failed to remove team share");
+  } finally {
+    shareRemoving.value = null;
   }
+}
+
+async function confirmRevoke(stopAlerts: boolean): Promise<void> {
+  const pending = pendingRevoke.value;
+  if (!pending) return;
+  if (pending.kind === "user") {
+    await removeShare(pending.id, stopAlerts);
+  } else {
+    await removeWorkflowTeamShare(pending.id, stopAlerts);
+  }
+  pendingRevoke.value = null;
 }
 
 watch(
@@ -328,7 +350,8 @@ watch(
                 size="sm"
                 class="text-destructive"
                 :loading="shareRemoving === share.user_id"
-                @click="removeShare(share.user_id)"
+                :data-testid="`workflow-share-remove-${share.email}`"
+                @click="pendingRevoke = { kind: 'user', id: share.user_id, subject: share.name }"
               >
                 Remove
               </Button>
@@ -378,7 +401,11 @@ watch(
                 variant="ghost"
                 size="sm"
                 class="text-destructive"
-                @click="removeWorkflowTeamShare(share.team_id)"
+                :loading="shareRemoving === share.team_id"
+                :data-testid="`workflow-team-share-remove-${share.team_name}`"
+                @click="
+                  pendingRevoke = { kind: 'team', id: share.team_id, subject: share.team_name }
+                "
               >
                 Remove
               </Button>
@@ -387,5 +414,13 @@ watch(
         </div>
       </div>
     </div>
+    <WorkflowShareRevokeDialog
+      :open="pendingRevoke !== null"
+      :subject="pendingRevoke?.subject ?? ''"
+      :kind="pendingRevoke?.kind ?? 'user'"
+      :loading="shareRemoving !== null"
+      @confirm="confirmRevoke"
+      @cancel="pendingRevoke = null"
+    />
   </Dialog>
 </template>

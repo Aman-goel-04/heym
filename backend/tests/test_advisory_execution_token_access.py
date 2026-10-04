@@ -141,6 +141,9 @@ class ShareRemovalRevokesTokensEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(  # WorkflowExecutionToken lookup, inside the revoke helper
                     scalars=lambda: SimpleNamespace(all=lambda: [removed_token, other_token])
                 ),
+                SimpleNamespace(  # Alert lookup, inside the alert-disabling helper
+                    scalars=lambda: SimpleNamespace(all=lambda: [])
+                ),
             ]
         )
         db.delete = AsyncMock()
@@ -188,6 +191,7 @@ class ShareRemovalRevokesTokensEndToEndTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(
                     scalars=lambda: SimpleNamespace(all=lambda: [kept_token, lost_token])
                 ),
+                SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [])),
             ]
         )
         db.delete = AsyncMock()

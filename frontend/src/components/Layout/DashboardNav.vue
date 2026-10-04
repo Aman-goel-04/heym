@@ -48,32 +48,25 @@ const tabs = [
   { id: "logs", label: "Logs", icon: Terminal },
 ] as const;
 
-const activeTab = computed(() => {
+type DashboardTabId = (typeof tabs)[number]["id"];
+
+const validQueryTabs = new Set<string>(
+  tabs
+    .map((tab) => tab.id)
+    .filter((id) => id !== "evals" && id !== "chat"),
+);
+
+const activeTab = computed<DashboardTabId>(() => {
   if (route.path === "/evals") return "evals";
   if (route.path.startsWith("/chats")) return "chat";
-  const tabParam = route.query.tab as string;
-  if (
-    tabParam === "board" ||
-    tabParam === "schedules" ||
-    tabParam === "credentials" ||
-    tabParam === "globalvariables" ||
-    tabParam === "vectorstores" ||
-    tabParam === "mcp" ||
-    tabParam === "traces" ||
-    tabParam === "alerts" ||
-    tabParam === "analytics" ||
-    tabParam === "dashboard" ||
-    tabParam === "logs" ||
-    tabParam === "drive" ||
-    tabParam === "datatable" ||
-    tabParam === "templates" ||
-    tabParam === "teams"
-  ) {
-    return tabParam;
+
+  const rawTab = route.query.tab;
+  const tabParam = Array.isArray(rawTab) ? rawTab[0] : rawTab;
+  if (typeof tabParam === "string") {
+    if (validQueryTabs.has(tabParam)) return tabParam as DashboardTabId;
+    if (tabParam.startsWith("datatable/")) return "datatable";
   }
-  if (tabParam?.startsWith("datatable/")) {
-    return "datatable";
-  }
+
   return "workflows";
 });
 

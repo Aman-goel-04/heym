@@ -53,6 +53,10 @@ from app.services.llm_trace import LLMTraceContext, record_llm_trace
 router = APIRouter()
 
 MAX_BACKTEST_STEPS = 200
+RESUME_WITHOUT_ACCESS_DETAIL = (
+    "You no longer have access to the workflow this alert watches. "
+    "Ask its owner to share it with you again, then resume the alert."
+)
 
 
 async def _unacknowledged_counts(
@@ -600,6 +604,10 @@ async def update_alert(
 
     if "workflow_id" in changes:
         await _assert_workflow_access(db, validated.workflow_id, current_user.id)
+    elif validated.enabled and not alert.enabled and validated.workflow_id is not None:
+        # Revoking a share pauses the alerts that watch it; resuming must not walk around that.
+        if validated.workflow_id not in await get_accessible_workflow_ids(db, current_user.id):
+            raise HTTPException(status_code=403, detail=RESUME_WITHOUT_ACCESS_DETAIL)
     if "notify_workflow_id" in changes:
         await _assert_workflow_access(db, validated.notify_workflow_id, current_user.id)
 
@@ -684,6 +692,10 @@ async def test_alert(
     alert = await get_accessible_alert(db, alert_id, current_user.id)
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
+    # A paused alert may have been stopped by an access revoke; testing it must not keep
+    # reading metrics its owner can no longer open.
+    if not alert.enabled:
+        await _assert_workflow_access(db, alert.workflow_id, alert.owner_id)
 
     observation, window_start, window_end = await observe(db, alert)
     return AlertPreviewResponse(

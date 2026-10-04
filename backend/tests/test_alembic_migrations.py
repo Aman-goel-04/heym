@@ -15,7 +15,13 @@ class AlembicMigrationGraphTest(unittest.TestCase):
         self.script = ScriptDirectory.from_config(config)
 
     def test_revision_graph_has_one_head(self) -> None:
-        self.assertEqual(self.script.get_heads(), ["129_workflow_share_permission"])
+        self.assertEqual(self.script.get_heads(), ["130_add_cron_cleanup_claims"])
+
+    def test_cron_cleanup_claims_revision_follows_workflow_share_permission(self) -> None:
+        revision = self.script.get_revision("130_add_cron_cleanup_claims")
+
+        self.assertIsNotNone(revision)
+        self.assertEqual(revision.down_revision, "129_workflow_share_permission")
 
     def test_workflow_share_permission_follows_explicit_flag(self) -> None:
         revision = self.script.get_revision("129_workflow_share_permission")

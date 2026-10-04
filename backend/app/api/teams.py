@@ -36,27 +36,43 @@ from app.models.schemas import (
 )
 from app.services.audit_log import OUTCOME_DENIED, audit
 from app.services.dashboard_access import team_writable_widget_workflow_ids
-from app.services.workflow_access import revoke_execution_tokens_without_access
+from app.services.workflow_access import (
+    disable_alerts_without_access,
+    revoke_execution_tokens_without_access,
+)
 
 router = APIRouter(tags=["teams"])
 
 
-async def _revoke_execution_tokens_for_team_workflows(
-    db: AsyncSession, workflow_ids: list[uuid.UUID]
+async def _revoke_access_for_team_workflows(
+    db: AsyncSession, workflow_ids: list[uuid.UUID], actor: User
 ) -> None:
-    """Revoke execution tokens minted by users who lost access through a team change.
+    """Revoke execution tokens and stop alerts of users who lost access through a team change.
 
     ``workflow_ids`` must be captured before the team, its membership row, or its workflow
     shares are deleted: a team deletion cascades onto ``WorkflowTeamShare``, so querying that
     table by ``team_id`` after the delete has already flushed would find nothing. Call this
     after the delete has been flushed so ``user_has_workflow_access`` sees the post-removal
-    state when it decides whether a token's minter still belongs.
+    state when it decides whether a token's minter or an alert's owner still belongs.
+
+    Alerts are always stopped here, unlike a direct share removal: the team creator making
+    this change is not necessarily the workflow owner, so there is nobody to ask.
     """
     if not workflow_ids:
         return
     result = await db.execute(select(Workflow).where(Workflow.id.in_(workflow_ids)))
     for workflow in result.scalars().all():
         await revoke_execution_tokens_without_access(db, workflow)
+        for alert in await disable_alerts_without_access(db, workflow):
+            audit(
+                action="alert.disable_on_access_revoke",
+                actor=actor,
+                target_type="alert",
+                target_id=alert.id,
+                target_name=alert.name,
+                workflow_id=workflow.id,
+                alert_owner_id=alert.owner_id,
+            )
 
 
 async def _ensure_team_member(
@@ -449,7 +465,7 @@ async def delete_team(
     )
     await db.delete(team)
     await db.flush()
-    await _revoke_execution_tokens_for_team_workflows(db, team_workflow_ids)
+    await _revoke_access_for_team_workflows(db, team_workflow_ids, current_user)
     await db.commit()
 
 
@@ -552,6 +568,6 @@ async def remove_team_member(
     )
     await db.delete(member)
     await db.flush()
-    await _revoke_execution_tokens_for_team_workflows(db, team_workflow_ids)
+    await _revoke_access_for_team_workflows(db, team_workflow_ids, current_user)
     await db.commit()
     return await get_team(team.id, db, current_user)
