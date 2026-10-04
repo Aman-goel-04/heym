@@ -21,6 +21,7 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 _FILE_ID_KEYS = ("id", "file_id", "fileId", "fileID")
+_FILE_WRAPPER_KEYS = ("file", "result", "data")
 _PDF_MAGIC = b"%PDF"
 _AUTO_LANGUAGE = "auto"
 
@@ -198,6 +199,24 @@ def _json_to_xml(value: object) -> str:
         raise ValueError(f"Converter node: invalid JSON input for XML conversion: {exc}") from exc
 
 
+def _parse_uuid(text: str) -> uuid.UUID | None:
+    """Parse a UUID directly or from an embedded pattern (e.g. download URL)."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return uuid.UUID(stripped)
+    except ValueError:
+        pass
+    match = _UUID_RE.search(stripped)
+    if match:
+        try:
+            return uuid.UUID(match.group(0))
+        except ValueError:
+            return None
+    return None
+
+
 def _extract_file_id(value: object, depth: int = 0) -> uuid.UUID | None:
     """Pull a Heym Drive file id out of an id string, URL, or file object.
 
@@ -212,27 +231,10 @@ def _extract_file_id(value: object, depth: int = 0) -> uuid.UUID | None:
         return value
 
     if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            return uuid.UUID(text)
-        except ValueError:
-            match = _UUID_RE.search(text)
-            if not match:
-                return None
-            try:
-                return uuid.UUID(match.group(0))
-            except ValueError:
-                return None
+        return _parse_uuid(value)
 
     if isinstance(value, dict):
-        for key in _FILE_ID_KEYS:
-            if key in value:
-                found = _extract_file_id(value[key], depth + 1)
-                if found is not None:
-                    return found
-        for key in ("file", "result", "data"):
+        for key in (*_FILE_ID_KEYS, *_FILE_WRAPPER_KEYS):
             if key in value:
                 found = _extract_file_id(value[key], depth + 1)
                 if found is not None:
