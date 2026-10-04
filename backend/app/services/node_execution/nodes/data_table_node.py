@@ -17,7 +17,9 @@ def _build_data_table_sort_clauses(sort_str: str, columns: list) -> list:
     numeric sort is performed via regex validation + cast to NUMERIC, falling back to NULL
     for invalid/empty values so queries never fail.
     NULLS LAST is explicitly applied.
-    'DataTableRow.id.asc()' is added as a secondary ordering key for deterministic LIMIT
+    'DataTableRow.created_at.asc()' is added as the primary tie-breaker unless
+    already sorting by 'created_at' or 'id'.
+    'DataTableRow.id.asc()' is added as the final ordering key for deterministic LIMIT
     unless already sorting by 'id'.
     """
     from sqlalchemy import Numeric, case, cast, null
@@ -61,6 +63,8 @@ def _build_data_table_sort_clauses(sort_str: str, columns: list) -> list:
 
     order_expr = field.desc().nulls_last() if descending else field.asc().nulls_last()
     clauses = [order_expr]
+    if col_name not in ("id", "created_at", ""):
+        clauses.append(DataTableRow.created_at.asc())
     if col_name != "id":
         clauses.append(DataTableRow.id.asc())
     return clauses

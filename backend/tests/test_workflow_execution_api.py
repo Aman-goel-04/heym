@@ -1549,7 +1549,7 @@ class WorkflowExecutorDataTableNodeTests(unittest.TestCase):
         self.assertEqual(fake_db.last_row_query.limit_val, 5)
         self.assertEqual(len(fake_db.last_row_query.order_by_args), 1)
         sort_clauses = fake_db.last_row_query.order_by_args[0]
-        self.assertEqual(len(sort_clauses), 2)
+        self.assertEqual(len(sort_clauses), 3)
         sort_sql = " ".join(
             str(
                 clause.compile(
@@ -1563,6 +1563,7 @@ class WorkflowExecutorDataTableNodeTests(unittest.TestCase):
         self.assertIn("CAST", sort_sql.upper())
         self.assertIn("NUMERIC", sort_sql.upper())
         self.assertIn("DESC NULLS LAST", sort_sql.upper())
+        self.assertIn("data_table_rows.created_at ASC", sort_sql)
         self.assertIn("data_table_rows.id ASC", sort_sql)
 
     def test_get_all_uses_sort_clauses(self) -> None:
@@ -1602,7 +1603,7 @@ class WorkflowExecutorDataTableNodeTests(unittest.TestCase):
         self.assertIsNotNone(fake_db.last_row_query)
         self.assertEqual(len(fake_db.last_row_query.order_by_args), 1)
         sort_clauses = fake_db.last_row_query.order_by_args[0]
-        self.assertEqual(len(sort_clauses), 2)
+        self.assertEqual(len(sort_clauses), 3)
         sort_sql = " ".join(
             str(
                 clause.compile(
@@ -1614,6 +1615,7 @@ class WorkflowExecutorDataTableNodeTests(unittest.TestCase):
         )
         self.assertIn("data ->> 'name'", sort_sql)
         self.assertIn("ASC NULLS LAST", sort_sql.upper())
+        self.assertIn("data_table_rows.created_at ASC", sort_sql)
         self.assertIn("data_table_rows.id ASC", sort_sql)
 
 
@@ -1765,49 +1767,57 @@ class DataTableSortClauseTests(unittest.TestCase):
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
 
         clauses = _build_data_table_sort_clauses("name", [{"name": "name", "type": "string"}])
-        self.assertEqual(len(clauses), 2)
+        self.assertEqual(len(clauses), 3)
         sql0 = self._sql(clauses[0])
         sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
         self.assertIn("data ->> 'name'", sql0)
         self.assertIn("ASC NULLS LAST", sql0.upper())
-        self.assertIn("data_table_rows.id ASC", sql1)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
 
     def test_prefixed_string_column_desc(self) -> None:
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
 
         clauses = _build_data_table_sort_clauses("-name", [{"name": "name", "type": "string"}])
-        self.assertEqual(len(clauses), 2)
+        self.assertEqual(len(clauses), 3)
         sql0 = self._sql(clauses[0])
         sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
         self.assertIn("data ->> 'name'", sql0)
         self.assertIn("DESC NULLS LAST", sql0.upper())
-        self.assertIn("data_table_rows.id ASC", sql1)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
 
     def test_number_column_asc_casts_to_numeric_with_regex(self) -> None:
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
 
         clauses = _build_data_table_sort_clauses("score", [{"name": "score", "type": "number"}])
-        self.assertEqual(len(clauses), 2)
+        self.assertEqual(len(clauses), 3)
         sql0 = self._sql(clauses[0]).upper()
         sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
         self.assertIn("CASE WHEN", sql0)
         self.assertIn("CAST", sql0)
         self.assertIn("NUMERIC", sql0)
         self.assertIn("ASC NULLS LAST", sql0)
-        self.assertIn("data_table_rows.id ASC", sql1)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
 
     def test_number_column_desc_casts_to_numeric_with_regex(self) -> None:
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
 
         clauses = _build_data_table_sort_clauses("-score", [{"name": "score", "type": "number"}])
-        self.assertEqual(len(clauses), 2)
+        self.assertEqual(len(clauses), 3)
         sql0 = self._sql(clauses[0]).upper()
         sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
         self.assertIn("CASE WHEN", sql0)
         self.assertIn("CAST", sql0)
         self.assertIn("NUMERIC", sql0)
         self.assertIn("DESC NULLS LAST", sql0)
-        self.assertIn("data_table_rows.id ASC", sql1)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
 
     def test_meta_created_at_desc(self) -> None:
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
@@ -1827,13 +1837,15 @@ class DataTableSortClauseTests(unittest.TestCase):
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
 
         clauses = _build_data_table_sort_clauses("updated_at", [])
-        self.assertEqual(len(clauses), 2)
+        self.assertEqual(len(clauses), 3)
         sql0 = self._sql(clauses[0])
         sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
         self.assertIn("data_table_rows.updated_at", sql0)
         self.assertNotIn("->>", sql0)
         self.assertIn("ASC NULLS LAST", sql0.upper())
-        self.assertIn("data_table_rows.id ASC", sql1)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
 
     def test_meta_id_sort_does_not_duplicate_secondary_id(self) -> None:
         from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses

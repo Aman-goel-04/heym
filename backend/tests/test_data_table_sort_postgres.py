@@ -26,7 +26,7 @@ class DataTablePostgreSqlSortIntegrationTests(unittest.TestCase):
     - Non-numeric or empty values in number columns do not crash the query.
     - NULLS LAST is explicitly respected on both ASC and DESC.
     - Metadata columns (created_at, updated_at) map to real table columns.
-    - id provides deterministic tie-breaking.
+    - created_at provides the first tie-breaker, followed by id.
     - limit=1 returns the highest-score row rather than the newest row.
     - Both find and getAll operations honor the configured sort column.
     """
@@ -241,11 +241,83 @@ class DataTablePostgreSqlSortIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["data"]["score"], 100)
 
     def test_deterministic_tie_breaking_by_id(self) -> None:
-        # Alice (id ending in 0001) and George (id ending in 0007) both have score 10.
-        # Order by score ASC or DESC must stably order Alice before George by id ASC.
+        # When score and created_at are identical, id provides deterministic ordering.
+        now = datetime.now(timezone.utc)
+        same_time = now - timedelta(hours=5)
+        row_id1 = DataTableRow(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000010"),
+            table_id=self.table_id,
+            data={"name": "TieId10", "score": 777},
+            created_at=same_time,
+            updated_at=now,
+        )
+        row_id2 = DataTableRow(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000020"),
+            table_id=self.table_id,
+            data={"name": "TieId20", "score": 777},
+            created_at=same_time,
+            updated_at=now,
+        )
+        with SessionLocal() as db:
+            db.add_all([row_id1, row_id2])
+            db.commit()
+
         rows = self._execute_dt("find", sort="-score")
-        tied_names = [r["data"]["name"] for r in rows if r["data"].get("score") == 10]
-        self.assertEqual(tied_names, ["Alice", "George"])
+        tied_names = [r["data"]["name"] for r in rows if r["data"].get("score") == 777]
+        self.assertEqual(tied_names, ["TieId10", "TieId20"])
+
+    def test_deterministic_tie_breaking_by_created_at_before_id(self) -> None:
+        # Row with older created_at but higher UUID must precede row with newer created_at
+        # and lower UUID when sort column values are equal.
+        now = datetime.now(timezone.utc)
+        row_older_high_id = DataTableRow(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000099"),
+            table_id=self.table_id,
+            data={"name": "OlderHighId", "score": 999},
+            created_at=now - timedelta(hours=2),
+            updated_at=now,
+        )
+        row_newer_low_id = DataTableRow(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000010"),
+            table_id=self.table_id,
+            data={"name": "NewerLowId", "score": 999},
+            created_at=now - timedelta(hours=1),
+            updated_at=now,
+        )
+        with SessionLocal() as db:
+            db.add_all([row_older_high_id, row_newer_low_id])
+            db.commit()
+
+        rows = self._execute_dt("find", sort="-score", limit=2)
+        names = [r["data"]["name"] for r in rows]
+        self.assertEqual(names, ["OlderHighId", "NewerLowId"])
+
+    def test_unknown_column_falls_back_to_creation_order(self) -> None:
+        # Unknown/missing sort column produces NULL for all rows; created_at.asc()
+        # preserves creation order rather than falling back directly to random id order.
+        now = datetime.now(timezone.utc)
+        row_older_high_id = DataTableRow(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000099"),
+            table_id=self.table_id,
+            data={"name": "OlderFallback"},
+            created_at=now - timedelta(hours=2),
+            updated_at=now,
+        )
+        row_newer_low_id = DataTableRow(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000010"),
+            table_id=self.table_id,
+            data={"name": "NewerFallback"},
+            created_at=now - timedelta(hours=1),
+            updated_at=now,
+        )
+        with SessionLocal() as db:
+            db.add_all([row_older_high_id, row_newer_low_id])
+            db.commit()
+
+        rows = self._execute_dt("find", sort="nonexistent_column")
+        older_idx = next(i for i, r in enumerate(rows) if r["data"]["name"] == "OlderFallback")
+        newer_idx = next(i for i, r in enumerate(rows) if r["data"]["name"] == "NewerFallback")
+        self.assertLess(older_idx, newer_idx)
 
     def test_get_all_operation_honors_sort_column(self) -> None:
         rows = self._execute_dt("getAll", sort="-score")
