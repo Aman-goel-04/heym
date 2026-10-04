@@ -10,11 +10,6 @@ def has_task_items(markdown: str) -> bool:
     return any(TASK_ITEM_RE.match(line) for line in markdown.splitlines())
 
 
-def parse_task_line_indices(markdown: str) -> list[int]:
-    """Return 0-based line indices of GFM task list items in the markdown."""
-    return [i for i, line in enumerate(markdown.splitlines()) if TASK_ITEM_RE.match(line)]
-
-
 def toggle_task_item(markdown: str, line_index: int) -> str:
     """Flip `[ ]` ↔ `[x]` on the task list line at ``line_index``.
 
