@@ -177,10 +177,12 @@ class ClaimCleanupSlotRealPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(1 for claimed in results if claimed), 1)
 
     async def test_claim_persists_after_the_claiming_connection_is_closed(self) -> None:
-        # claim_cleanup_slot opens and fully closes its own session per call, so by
-        # the time the first call below returns, instance-a's connection is already
-        # gone. The claim must still block instance-b, since a future leader handoff
-        # looks exactly like this: the old leader's connections are long closed.
+        # Closing a session only returns its connection to the pool, which is the
+        # exact behavior that caused the original leak: a later caller can still get
+        # that same physical connection back. Disposing the engine between the two
+        # claims forces the second one onto a genuinely new connection, so this test
+        # proves persistence survives the connection being gone, not merely the
+        # session object - which is what a real leader handoff looks like.
         first = await claim_cleanup_slot(
             job_name=self.job_name, slot_date=self.slot_date, worker_id="instance-a"
         )
@@ -193,6 +195,8 @@ class ClaimCleanupSlotRealPostgresTests(unittest.IsolatedAsyncioTestCase):
             row = result.scalar_one()
             self.assertEqual(row.slot_date, self.slot_date)
             self.assertEqual(row.claimed_by, "instance-a")
+
+        await engine.dispose()
 
         second = await claim_cleanup_slot(
             job_name=self.job_name, slot_date=self.slot_date, worker_id="instance-b"
