@@ -205,6 +205,56 @@ class JsonToCsvTests(unittest.TestCase):
 
         self.assertEqual(output["result"], "")
 
+    def test_inferred_columns_merge_unique_keys_across_rows(self) -> None:
+        output = converter_node.execute(
+            _ctx(
+                {"conversion": "jsonToCsv"},
+                [{"name": "Ada", "age": 36}, {"name": "Grace", "title": "Admiral"}],
+            )
+        )
+
+        self.assertEqual(output["result"], "name,age,title\nAda,36,\nGrace,,Admiral")
+
+    def test_list_of_scalars(self) -> None:
+        output = converter_node.execute(_ctx({"conversion": "jsonToCsv"}, ["first", "second"]))
+
+        self.assertEqual(output["result"], "first\nsecond")
+
+    def test_explicit_columns_filter_and_pad_missing_fields(self) -> None:
+        output = converter_node.execute(
+            _ctx(
+                {"conversion": "jsonToCsv", "converterColumns": "role, age"},
+                [{"name": "Ada", "age": 36}],
+            )
+        )
+
+        self.assertEqual(output["result"], "role,age\n,36")
+
+    def test_custom_delimiter(self) -> None:
+        output = converter_node.execute(
+            _ctx(
+                {"conversion": "jsonToCsv", "delimiter": ";"},
+                [{"name": "Ada", "age": 36}],
+            )
+        )
+
+        self.assertEqual(output["result"], "name;age\nAda;36")
+
+    def test_empty_string_input_returns_empty_string(self) -> None:
+        output = converter_node.execute(_ctx({"conversion": "jsonToCsv"}, ""))
+
+        self.assertEqual(output["result"], "")
+
+
+class JsonToCsvInternalTests(unittest.TestCase):
+    def test_infer_fieldnames_preserves_order_and_skips_non_dicts(self) -> None:
+        rows = [{"a": 1, "b": 2}, "not-a-dict", {"b": 3, "c": 4}, {"a": 5}]
+        self.assertEqual(converter_node._infer_fieldnames(rows), ["a", "b", "c"])
+
+    def test_infer_fieldnames_empty_for_no_dicts(self) -> None:
+        self.assertEqual(converter_node._infer_fieldnames([]), [])
+        self.assertEqual(converter_node._infer_fieldnames(["a", 1]), [])
+
 
 class XmlToJsonTests(unittest.TestCase):
     def test_xml_with_attributes_and_repeated_elements_becomes_an_object(self) -> None:
