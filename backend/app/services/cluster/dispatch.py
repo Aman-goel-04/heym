@@ -42,7 +42,11 @@ from app.services.execution_cancellation import (
     register_execution,
     relinquish_execution,
 )
-from app.services.workflow_executor import WorkflowCancelledError, execute_workflow
+from app.services.workflow_executor import (
+    WorkflowCancelledError,
+    WorkflowTimeoutError,
+    execute_workflow,
+)
 
 logger = logging.getLogger("cluster")
 
@@ -469,6 +473,15 @@ class RunQueueWorker:
                 row.execution_id,
             )
             result.status = "error"
+        except WorkflowTimeoutError as exc:
+            logger.warning(
+                "Allow-downstream run timed out: %s (%s)",
+                row.execution_id,
+                exc,
+            )
+            result.status = "error"
+            if hasattr(result, "outputs") and isinstance(result.outputs, dict):
+                result.outputs.setdefault("error", str(exc) or "Workflow execution timed out")
         except WorkflowCancelledError:
             logger.info("Allow-downstream run was cancelled: %s", row.execution_id)
             result.status = "cancelled"
