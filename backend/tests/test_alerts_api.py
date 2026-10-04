@@ -277,7 +277,13 @@ class TestUpdateRevalidatesTheMergedResult(unittest.IsolatedAsyncioTestCase):
     async def test_reenabling_resets_next_check_and_state(self):
         owner = _user()
         row = _alert_row(owner.id, enabled=False, state="triggered")
-        with patch(f"{MODULE}.get_owned_alert", new=AsyncMock(return_value=row)):
+        with (
+            patch(f"{MODULE}.get_owned_alert", new=AsyncMock(return_value=row)),
+            patch(
+                f"{MODULE}.get_accessible_workflow_ids",
+                new=AsyncMock(return_value=[row.workflow_id]),
+            ),
+        ):
             await alerts_api.update_alert(
                 row.id, AlertUpdate(enabled=True), db=_empty_db(), current_user=owner
             )

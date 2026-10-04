@@ -1136,8 +1136,10 @@ export const workflowApi = {
     });
     return response.data;
   },
-  removeShare: async (id: string, userId: string): Promise<void> => {
-    await api.delete(`/workflows/${id}/shares/${userId}`);
+  removeShare: async (id: string, userId: string, stopAlerts = true): Promise<void> => {
+    await api.delete(`/workflows/${id}/shares/${userId}`, {
+      params: { stop_alerts: stopAlerts },
+    });
   },
   listTeamShares: async (id: string): Promise<WorkflowTeamShare[]> => {
     const response = await api.get<WorkflowTeamShare[]>(
@@ -1156,8 +1158,10 @@ export const workflowApi = {
     );
     return response.data;
   },
-  removeTeamShare: async (id: string, teamId: string): Promise<void> => {
-    await api.delete(`/workflows/${id}/team-shares/${teamId}`);
+  removeTeamShare: async (id: string, teamId: string, stopAlerts = true): Promise<void> => {
+    await api.delete(`/workflows/${id}/team-shares/${teamId}`, {
+      params: { stop_alerts: stopAlerts },
+    });
   },
 
   getInputFields: async (

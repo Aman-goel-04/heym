@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
+import { useToast } from "@/composables/useToast";
 import { alertsApi } from "@/services/api";
 import type {
   Alert,
@@ -37,6 +38,7 @@ export const useAlertsStore = defineStore("alerts", () => {
   const loading = ref(false);
   const eventsLoading = ref(false);
   const error = ref<string | null>(null);
+  const { showToast } = useToast();
 
   const triggeredAlerts = computed((): Alert[] =>
     alerts.value.filter((alert) => alert.state === "triggered" && alert.enabled),
@@ -100,8 +102,14 @@ export const useAlertsStore = defineStore("alerts", () => {
     }
   }
 
-  async function toggleEnabled(alert: Alert): Promise<Alert> {
-    return updateAlert(alert.id, { enabled: !alert.enabled });
+  async function toggleEnabled(alert: Alert): Promise<Alert | null> {
+    try {
+      return await updateAlert(alert.id, { enabled: !alert.enabled });
+    } catch (err: unknown) {
+      const fallback = alert.enabled ? "Could not pause the alert" : "Could not resume the alert";
+      showToast(errorMessage(err, fallback), "error", 8000);
+      return null;
+    }
   }
 
   async function acknowledgeEvent(eventId: string): Promise<void> {

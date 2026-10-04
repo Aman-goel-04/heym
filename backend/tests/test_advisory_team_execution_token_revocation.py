@@ -44,6 +44,9 @@ class TeamChangeRevokesStaleExecutionTokensTests(unittest.IsolatedAsyncioTestCas
                 SimpleNamespace(
                     scalars=lambda: SimpleNamespace(all=lambda: [token])
                 ),  # WorkflowExecutionToken lookup for that workflow
+                SimpleNamespace(
+                    scalars=lambda: SimpleNamespace(all=lambda: [])
+                ),  # Alert lookup for that workflow
             ]
         )
         db.delete = AsyncMock()
@@ -87,6 +90,9 @@ class TeamChangeRevokesStaleExecutionTokensTests(unittest.IsolatedAsyncioTestCas
                 SimpleNamespace(
                     scalars=lambda: SimpleNamespace(all=lambda: [token])
                 ),  # WorkflowExecutionToken lookup for that workflow
+                SimpleNamespace(
+                    scalars=lambda: SimpleNamespace(all=lambda: [])
+                ),  # Alert lookup for that workflow
             ]
         )
         db.delete = AsyncMock()

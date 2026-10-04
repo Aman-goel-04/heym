@@ -8,7 +8,7 @@ from collections.abc import Coroutine, Iterable, Iterator
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -119,6 +119,7 @@ from app.services.pending_execution import needs_local_pending_persist
 from app.services.pending_review_cancel import cancel_pending_review_execution
 from app.services.workflow_access import (
     PERMISSION_WRITE,
+    disable_alerts_without_access,
     get_workflow_permission,
     revoke_execution_tokens_without_access,
     user_can_write_workflow,
@@ -2509,10 +2510,24 @@ async def create_workflow_share(
     )
 
 
+async def _stop_alerts_without_access(db: AsyncSession, workflow: Workflow, actor: User) -> None:
+    for alert in await disable_alerts_without_access(db, workflow):
+        audit(
+            action="alert.disable_on_access_revoke",
+            actor=actor,
+            target_type="alert",
+            target_id=alert.id,
+            target_name=alert.name,
+            workflow_id=workflow.id,
+            alert_owner_id=alert.owner_id,
+        )
+
+
 @router.delete("/{workflow_id}/shares/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_workflow_share(
     workflow_id: uuid.UUID,
     user_id: uuid.UUID,
+    stop_alerts: Annotated[bool, Query()] = True,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -2551,6 +2566,8 @@ async def remove_workflow_share(
     await db.delete(share)
     await db.flush()
     await revoke_execution_tokens_without_access(db, workflow)
+    if stop_alerts:
+        await _stop_alerts_without_access(db, workflow, current_user)
     await db.commit()
 
 
@@ -2680,6 +2697,7 @@ async def create_workflow_team_share(
 async def remove_workflow_team_share(
     workflow_id: uuid.UUID,
     team_id: uuid.UUID,
+    stop_alerts: Annotated[bool, Query()] = True,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -2717,6 +2735,8 @@ async def remove_workflow_team_share(
     await db.delete(share)
     await db.flush()
     await revoke_execution_tokens_without_access(db, workflow)
+    if stop_alerts:
+        await _stop_alerts_without_access(db, workflow, current_user)
     await db.commit()
 
 

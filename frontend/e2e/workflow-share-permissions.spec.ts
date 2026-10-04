@@ -75,6 +75,60 @@ test("chooses read or write when sharing with a team and changes it later", asyn
   }
 });
 
+test("asks whether to stop alerts when removing a share and sends the choice", async ({ page }) => {
+  await prepareAuthenticatedPage(page);
+  await page.setViewportSize({ width: 1600, height: 1000 });
+
+  const teamName = `Revoke Team ${Date.now()}`;
+  const teamResponse = await page.request.post("/api/teams", { data: { name: teamName } });
+  await expectOk(teamResponse);
+  const team = (await teamResponse.json()) as { id: string };
+  const workflow = await createWorkflow(page, `Revoke ${Date.now()}`, [
+    { id: "input", type: "textInput", position: { x: 0, y: 0 }, data: { label: "input" } },
+  ]);
+
+  const shareWithTeam = async (): Promise<void> => {
+    await expectOk(
+      await page.request.post(`/api/workflows/${workflow.id}/team-shares`, {
+        data: { team_id: team.id, permission: "read" },
+      }),
+    );
+  };
+
+  const removeThroughDialog = async (stopAlerts: boolean): Promise<URL> => {
+    await page.goto(`/workflows/${workflow.id}`);
+    await page.getByRole("button", { name: "Share", exact: true }).first().click();
+    await page.getByTestId(`workflow-team-share-remove-${teamName}`).click();
+
+    const confirm = page.getByTestId("workflow-share-revoke-dialog");
+    await expect(confirm).toBeVisible();
+    const checkbox = page.getByTestId("workflow-share-revoke-stop-alerts");
+    await expect(checkbox).toBeChecked();
+    if (!stopAlerts) await checkbox.uncheck();
+
+    const deleteRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes(`/workflows/${workflow.id}/team-shares/${team.id}`) &&
+        request.method() === "DELETE",
+    );
+    await page.getByTestId("workflow-share-revoke-confirm").click();
+    const url = new URL((await deleteRequest).url());
+    await expect(page.getByTestId(`workflow-team-share-row-${teamName}`)).toHaveCount(0);
+    return url;
+  };
+
+  try {
+    await shareWithTeam();
+    expect((await removeThroughDialog(true)).searchParams.get("stop_alerts")).toBe("true");
+
+    await shareWithTeam();
+    expect((await removeThroughDialog(false)).searchParams.get("stop_alerts")).toBe("false");
+  } finally {
+    await deleteWorkflow(page, workflow.id);
+    await deleteTeam(page, team.id);
+  }
+});
+
 test("rejects an unknown permission and keeps legacy requests writable", async ({ page }) => {
   await prepareAuthenticatedPage(page);
   const teamResponse = await page.request.post("/api/teams", { data: { name: `Legacy Team ${Date.now()}` } });

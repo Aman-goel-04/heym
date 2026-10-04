@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.models import (
+    Alert,
     TeamMember,
     Workflow,
     WorkflowExecutionToken,
@@ -171,3 +172,32 @@ async def revoke_execution_tokens_without_access(db: AsyncSession, workflow: Wor
     for token in result.scalars().all():
         if not await user_has_workflow_access(db, workflow, token.user_id):
             token.revoked = True
+
+
+async def disable_alerts_without_access(db: AsyncSession, workflow: Workflow) -> list[Alert]:
+    """Disable alerts watching ``workflow`` whose owner can no longer access it.
+
+    Call after a share, team share, team membership, or team itself has been removed and the
+    change flushed. An alert reads the workflow's execution metrics on every check, so leaving
+    it enabled keeps reporting data its owner can no longer open. Alerts that only name
+    ``workflow`` as their notify target are left alone: the notify runner rechecks access
+    before every run. Returns the disabled alerts so the calling router can audit them.
+    """
+    result = await db.execute(
+        select(Alert).where(
+            Alert.workflow_id == workflow.id,
+            Alert.enabled.is_(True),
+            Alert.owner_id != workflow.owner_id,
+        )
+    )
+    access_by_owner: dict[UUID, bool] = {}
+    disabled: list[Alert] = []
+    for alert in result.scalars().all():
+        if alert.owner_id not in access_by_owner:
+            access_by_owner[alert.owner_id] = await user_has_workflow_access(
+                db, workflow, alert.owner_id
+            )
+        if not access_by_owner[alert.owner_id]:
+            alert.enabled = False
+            disabled.append(alert)
+    return disabled

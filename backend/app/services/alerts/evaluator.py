@@ -21,6 +21,7 @@ from app.db.session import async_session_maker
 from app.models.alert_schemas import describe_condition, parse_alert_config
 from app.services.alerts.context import AlertEvaluationContext, AlertObservation
 from app.services.alerts.registry import get_alert_handler
+from app.services.workflow_access import user_has_workflow_access
 
 logger = logging.getLogger("alert_evaluator")
 
@@ -141,6 +142,7 @@ async def _run_notify_workflow(
     alert_id: uuid.UUID,
     event_id: uuid.UUID,
     notify_workflow_id: uuid.UUID,
+    owner_id: uuid.UUID,
     payload: dict[str, Any],
 ) -> None:
     """Execute the notify workflow and record the outcome on the event row.
@@ -148,6 +150,11 @@ async def _run_notify_workflow(
     Runs in its own session and swallows every exception. A broken notify
     workflow must never stop the evaluator loop - the record of the firing
     matters more than the delivery of it.
+
+    Runs as the alert owner, with their credentials and global variables, exactly
+    as if they had run the notify workflow themselves. Running as the notify
+    workflow's owner would let anyone it was shared with fire it on that owner's
+    credentials. Access is rechecked on every run, so a revoked share stops it.
 
     Mirrors ``error_workflow_runner.maybe_run_error_workflow``: ``execute_workflow``
     is synchronous and is called through ``asyncio.to_thread``, and the caller
@@ -163,10 +170,10 @@ async def _run_notify_workflow(
         async with async_session_maker() as db:
             wf_result = await db.execute(select(Workflow).where(Workflow.id == notify_workflow_id))
             target = wf_result.scalar_one_or_none()
-            if target is None:
+            if target is None or not await user_has_workflow_access(db, target, owner_id):
                 status = "skipped"
             else:
-                actor_user_id = target.owner_id
+                actor_user_id = owner_id
                 inputs = {"headers": {}, "query": {}, "body": payload}
                 workflow_cache = await collect_referenced_workflows(
                     db, target.nodes, actor_user_id=actor_user_id
@@ -221,7 +228,7 @@ async def _run_notify_workflow(
 def dispatch_notify(alert: Any, event_id: uuid.UUID, payload: dict[str, Any]) -> None:
     """Start the notify workflow in the background, keeping a strong task reference."""
     task = asyncio.create_task(
-        _run_notify_workflow(alert.id, event_id, alert.notify_workflow_id, payload)
+        _run_notify_workflow(alert.id, event_id, alert.notify_workflow_id, alert.owner_id, payload)
     )
     _notify_tasks.add(task)
     task.add_done_callback(_notify_tasks.discard)
