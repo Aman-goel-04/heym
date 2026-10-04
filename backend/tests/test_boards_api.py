@@ -518,7 +518,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=True)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
         ) as enqueue:
             await boards_api.move_card(
                 board_id=board.id,
@@ -537,6 +539,82 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         added = [call.args[0] for call in db.add.call_args_list]
         events = [o for o in added if type(o).__name__ == "BoardCardActivity"]
         self.assertTrue(any(a.kind == "event" for a in events))
+
+    async def test_move_pending_card_cancels_review_before_enqueueing(self):
+        user, board, from_column, to_column, card = self._setup()
+        card.run_status = "pending"
+        pending_run = SimpleNamespace(workflow_id=uuid.uuid4(), execution_history_id=uuid.uuid4())
+        db = AsyncMock()
+        db.add = MagicMock()
+        _wire_db_inserts(db)
+        pending_res = MagicMock()
+        pending_res.scalars.return_value.first.return_value = pending_run
+        db.execute = AsyncMock(
+            side_effect=[
+                _result_with(scalar=board),
+                _result_with(scalar=card),
+                _result_with(scalar=to_column),
+                _result_with(scalar=from_column),
+                _result_with(scalars_list=[]),
+                _result_with(scalars_list=[]),
+                pending_res,
+            ]
+        )
+
+        with (
+            patch.object(boards_api, "cancel_pending_review_execution", AsyncMock()) as cancel,
+            patch.object(
+                boards_api.board_run_service,
+                "enqueue_card_chain",
+                AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
+            ),
+        ):
+            await boards_api.move_card(
+                board_id=board.id,
+                card_id=card.id,
+                request=CardMoveRequest(to_column_id=to_column.id, position=0),
+                db=db,
+                current_user=user,
+            )
+
+        cancel.assert_awaited_once()
+        kwargs = cancel.await_args.kwargs
+        self.assertEqual(kwargs["workflow_id"], pending_run.workflow_id)
+        self.assertEqual(kwargs["execution_id"], pending_run.execution_history_id)
+
+    async def test_move_blocked_enqueue_logs_event_without_409(self):
+        user, board, from_column, to_column, card = self._setup()
+        db = AsyncMock()
+        db.add = MagicMock()
+        _wire_db_inserts(db)
+        db.execute = AsyncMock(
+            side_effect=[
+                _result_with(scalar=board),
+                _result_with(scalar=card),
+                _result_with(scalar=to_column),
+                _result_with(scalar=from_column),
+                _result_with(scalars_list=[]),
+                _result_with(scalars_list=[]),
+            ]
+        )
+
+        with patch.object(
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_BLOCKED),
+        ):
+            response = await boards_api.move_card(
+                board_id=board.id,
+                card_id=card.id,
+                request=CardMoveRequest(to_column_id=to_column.id, position=0),
+                db=db,
+                current_user=user,
+            )
+
+        self.assertIsNotNone(response)
+        added = [call.args[0] for call in db.add.call_args_list]
+        events = [o for o in added if type(o).__name__ == "BoardCardActivity"]
+        self.assertTrue(any("did not start" in (a.content or "") for a in events))
 
     async def test_backward_move_does_not_allow_advance(self):
         user, board, from_column, to_column, card = self._setup()
@@ -557,7 +635,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
             ]
         )
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=True)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
         ) as enqueue:
             await boards_api.move_card(
                 board_id=board.id,
@@ -584,7 +664,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=True)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
         ) as enqueue:
             await boards_api.move_card(
                 board_id=board.id,
@@ -610,7 +692,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=False)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_BLOCKED),
         ):
             with self.assertRaises(HTTPException) as ctx:
                 await boards_api.run_card_chain(
@@ -637,7 +721,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=True)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
         ) as enqueue:
             await boards_api.run_card_chain(
                 board_id=board.id, card_id=card.id, db=db, current_user=user
@@ -660,7 +746,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=True)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
         ) as enqueue:
             await boards_api.run_card_chain(
                 board_id=board.id, card_id=card.id, db=db, current_user=user
@@ -687,7 +775,9 @@ class TestMoveAndRun(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            boards_api.board_run_service, "enqueue_card_chain", AsyncMock(return_value=True)
+            boards_api.board_run_service,
+            "enqueue_card_chain",
+            AsyncMock(return_value=boards_api.board_run_service.ENQUEUE_STARTED),
         ) as enqueue:
             await boards_api.run_card_chain(
                 board_id=board.id,

@@ -7,6 +7,7 @@ import {
   BOARD_CARD_TOUCH_DRAG_EVENT,
   type BoardCardTouchDragDetail,
 } from "@/composables/useBoardCardTouchDrag";
+import { useToast } from "@/composables/useToast";
 import { useBoardStore } from "@/stores/board";
 import BoardCardItem from "./BoardCardItem.vue";
 
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const boardStore = useBoardStore();
+const { showToast } = useToast();
 const dragOver = ref(false);
 const touchDragOver = ref(false);
 const columnDragOver = ref(false);
@@ -44,6 +46,18 @@ function dropIndexFromClientY(clientY: number): number {
   return cardEls.length;
 }
 
+// A running card can still be reordered within its own column (the chain does not
+// care about position), but moving it to a different column while it runs would
+// race the active chain against whatever the new column starts. Backend rejects a
+// concurrent enqueue either way; this just avoids the round trip and explains why.
+function blocksCrossColumnMove(cardId: string, targetColumnId: string): boolean {
+  const card = boardStore.activeBoard?.cards.find((c) => c.id === cardId);
+  if (!card || card.column_id === targetColumnId) return false;
+  if (card.run_status !== "running") return false;
+  showToast("This card is still running; wait for it to finish before moving it.", "error");
+  return true;
+}
+
 function containsPoint(clientX: number, clientY: number): boolean {
   const rect = lane.value?.getBoundingClientRect();
   if (!rect) return false;
@@ -65,6 +79,7 @@ function onCardTouchDrag(event: Event): void {
   const isOverLane = canAct.value && containsPoint(detail.clientX, detail.clientY);
   touchDragOver.value = detail.phase !== "end" && isOverLane;
   if (detail.phase === "end" && isOverLane) {
+    if (blocksCrossColumnMove(detail.cardId, props.column.id)) return;
     void boardStore.moveCard(
       detail.cardId,
       props.column.id,
@@ -124,6 +139,7 @@ function onDrop(event: DragEvent): void {
   if (!canAct.value) return;
   const cardId = event.dataTransfer?.getData("text/board-card");
   if (!cardId) return;
+  if (blocksCrossColumnMove(cardId, props.column.id)) return;
   void boardStore.moveCard(cardId, props.column.id, dropIndexFromClientY(event.clientY));
 }
 

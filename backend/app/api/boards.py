@@ -66,6 +66,7 @@ from app.services.file_storage import (
     store_file,
 )
 from app.services.hitl_service import build_public_base_url
+from app.services.pending_review_cancel import cancel_pending_review_execution
 from app.services.upload_limits import read_upload_file_limited
 from app.services.workflow_access import get_accessible_workflow
 
@@ -955,10 +956,37 @@ async def move_card(
     await db.commit()
 
     if column_changed:
+        if card.run_status == "pending":
+            # A card parked on a human answer has no active run row to block on, but
+            # the review itself is still open. Moving it must close that review first,
+            # or the old column's chain would resume into a card no longer sitting
+            # there once someone eventually answers it.
+            pending_run = (
+                (
+                    await db.execute(
+                        select(BoardCardRun).where(
+                            BoardCardRun.card_id == card.id, BoardCardRun.status == "pending"
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if (
+                pending_run is not None
+                and pending_run.workflow_id is not None
+                and pending_run.execution_history_id is not None
+            ):
+                await cancel_pending_review_execution(
+                    db,
+                    workflow_id=pending_run.workflow_id,
+                    execution_id=pending_run.execution_history_id,
+                )
+
         # Only a forward move (into a later column) may cascade; moving a card back
         # (e.g. to Backlog) runs the column's chain but must not auto-advance.
         forward = target.position > source.position
-        await board_run_service.enqueue_card_chain(
+        result = await board_run_service.enqueue_card_chain(
             db,
             card=card,
             column=target,
@@ -967,6 +995,19 @@ async def move_card(
             rerun=False,
             allow_advance=forward,
         )
+        if result == board_run_service.ENQUEUE_BLOCKED:
+            # The move already committed and cannot be undone here; surface the skip
+            # on the card's timeline instead of failing a request that already succeeded.
+            db.add(
+                BoardCardActivity(
+                    card_id=card.id,
+                    kind="event",
+                    author_type="system",
+                    content=f"{target.name}'s chain did not start: a run was still active",
+                    data={"column_id": str(target.id)},
+                )
+            )
+            await db.commit()
     audit(
         action="board.card_move",
         actor=current_user,
@@ -1008,7 +1049,7 @@ async def run_card_chain(
     )
     column_index = ordered.index(column.id) if column.id in ordered else -1
     allow_advance = column_index >= board_run_service.GATE_COLUMN_INDEX and not skip_auto_advance
-    enqueued = await board_run_service.enqueue_card_chain(
+    result = await board_run_service.enqueue_card_chain(
         db,
         card=card,
         column=column,
@@ -1017,7 +1058,7 @@ async def run_card_chain(
         rerun=True,
         allow_advance=allow_advance,
     )
-    if not enqueued:
+    if result != board_run_service.ENQUEUE_STARTED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A run is already active or the column has no workflows",

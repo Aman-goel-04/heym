@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import axios from "axios";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
@@ -24,12 +25,14 @@ import type { CardActivity, CardAttachment, CardDetail, CardRun } from "@/types/
 import { boardApi } from "@/services/api";
 import { useBoardStore } from "@/stores/board";
 import { playSuccessSound } from "@/utils/audio";
+import { useToast } from "@/composables/useToast";
 
 const props = defineProps<{ open: boolean; cardId: string | null }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const boardStore = useBoardStore();
 const router = useRouter();
+const { showToast } = useToast();
 const detail = ref<CardDetail | null>(null);
 const loading = ref(false);
 const comment = ref("");
@@ -214,19 +217,37 @@ async function submitComment(): Promise<void> {
   await boardStore.refreshActiveBoard();
 }
 
+// Tracked locally instead of a timing debounce: run_status on `detail` only updates
+// after `reload()` resolves, so a click right after the first would still race it.
+// This flips false the instant the request settles, success or failure, with no
+// arbitrary delay to tune.
+const runInFlight = ref(false);
+
 async function runFollowUp(): Promise<void> {
-  if (!detail.value || !boardStore.activeBoard) return;
-  // Positional planning gate: use sorted index, not the raw position field.
-  // After a column is deleted, positions may be sparse (e.g. 0,2,3) until reindexed.
-  const orderedColumns = [...boardStore.activeBoard.columns].sort(
-    (left, right) => left.position - right.position,
-  );
-  const columnIndex = orderedColumns.findIndex(
-    (column) => column.id === detail.value?.card.column_id,
-  );
-  const shouldSkipAutoAdvance = columnIndex === 1;
-  await boardStore.runFollowUp(detail.value.card.id, shouldSkipAutoAdvance);
-  await reload();
+  if (!detail.value || !boardStore.activeBoard || runInFlight.value) return;
+  runInFlight.value = true;
+  try {
+    // Positional planning gate: use sorted index, not the raw position field.
+    // After a column is deleted, positions may be sparse (e.g. 0,2,3) until reindexed.
+    const orderedColumns = [...boardStore.activeBoard.columns].sort(
+      (left, right) => left.position - right.position,
+    );
+    const columnIndex = orderedColumns.findIndex(
+      (column) => column.id === detail.value?.card.column_id,
+    );
+    const shouldSkipAutoAdvance = columnIndex === 1;
+    await boardStore.runFollowUp(detail.value.card.id, shouldSkipAutoAdvance);
+    await reload();
+  } catch (runError: unknown) {
+    if (axios.isAxiosError(runError) && runError.response?.status === 409) {
+      showToast("This card already has a run in progress.", "error");
+      await reload();
+    } else {
+      showToast("Failed to start the follow-up run.", "error");
+    }
+  } finally {
+    runInFlight.value = false;
+  }
 }
 
 function formatTime(iso: string): string {
@@ -360,10 +381,21 @@ async function openLiveRun(run: CardRun): Promise<void> {
         data-testid="card-run-followup"
         title="Run follow-up round"
         aria-label="Run follow-up round"
-        :disabled="detail.card.run_status === 'running' || detail.card.run_status === 'pending'"
+        :disabled="
+          runInFlight ||
+            detail.card.run_status === 'running' ||
+            detail.card.run_status === 'pending'
+        "
         @click="runFollowUp"
       >
-        <Play class="h-3.5 w-3.5" />
+        <Loader2
+          v-if="runInFlight"
+          class="h-3.5 w-3.5 animate-spin"
+        />
+        <Play
+          v-else
+          class="h-3.5 w-3.5"
+        />
       </button>
     </template>
     <div

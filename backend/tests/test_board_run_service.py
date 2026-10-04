@@ -708,20 +708,23 @@ class TestEnqueueHoldsTaskReference(unittest.IsolatedAsyncioTestCase):
         board = SimpleNamespace(id=uuid.uuid4())
         link = SimpleNamespace(workflow_id=uuid.uuid4(), position=0)
 
+        lock_res = MagicMock()
+        lock_res.first.return_value = (card.id,)
         active_res = MagicMock()
         active_res.scalars.return_value.all.return_value = []
         links_res = MagicMock()
         links_res.all.return_value = [(link, "WF")]
 
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[active_res, links_res])
+        db.add = MagicMock()
+        db.execute = AsyncMock(side_effect=[lock_res, active_res, links_res])
 
         with patch.object(board_run_service, "_run_chain", AsyncMock(return_value=None)):
             result = await board_run_service.enqueue_card_chain(
                 db, card=card, column=column, board=board, move=None, rerun=True
             )
             # The task must be strongly referenced so the GC cannot drop it mid-run.
-            self.assertTrue(result)
+            self.assertEqual(result, board_run_service.ENQUEUE_STARTED)
             self.assertEqual(card.run_status, "running")
             self.assertGreaterEqual(len(board_run_service._BACKGROUND_CHAIN_TASKS), 1)
             # let the scheduled task finish and clear itself from the set

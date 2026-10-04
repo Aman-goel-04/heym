@@ -52,6 +52,7 @@ class _SequencedSession:
     def __init__(self, results):
         self._results = list(results)
         self.commit = AsyncMock()
+        self.add = MagicMock()
         self.executed = 0
         self.statements = []
 
@@ -177,7 +178,9 @@ class EnqueueCardChainGuardTests(unittest.IsolatedAsyncioTestCase):
         card = SimpleNamespace(id=uuid.uuid4(), board_id=uuid.uuid4(), run_status="idle")
         column = SimpleNamespace(id=uuid.uuid4())
         board = SimpleNamespace(id=card.board_id)
-        session = _SequencedSession([_result(runs), _result(live_execution_ids)])
+        session = _SequencedSession(
+            [_result([(card.id,)]), _result(runs), _result(live_execution_ids)]
+        )
         links = [{"workflow_id": uuid.uuid4(), "workflow_name": "Plan", "position": 0}]
         spawn = MagicMock()
         with (
@@ -194,28 +197,28 @@ class EnqueueCardChainGuardTests(unittest.IsolatedAsyncioTestCase):
         enqueued, spawn, _ = await self._enqueue(
             [_run(active_execution_id=execution_id)], [execution_id]
         )
-        self.assertFalse(enqueued)
+        self.assertEqual(enqueued, board_run_service.ENQUEUE_BLOCKED)
         spawn.assert_not_called()
 
     async def test_pending_run_blocks_a_new_chain(self) -> None:
         enqueued, spawn, _ = await self._enqueue(
             [_run(status="pending", active_execution_id=None)], []
         )
-        self.assertFalse(enqueued)
+        self.assertEqual(enqueued, board_run_service.ENQUEUE_BLOCKED)
         spawn.assert_not_called()
 
     async def test_young_run_blocks_a_new_chain(self) -> None:
         enqueued, spawn, _ = await self._enqueue(
             [_run(active_execution_id=uuid.uuid4(), age_seconds=FRESH_AGE)], []
         )
-        self.assertFalse(enqueued)
+        self.assertEqual(enqueued, board_run_service.ENQUEUE_BLOCKED)
         spawn.assert_not_called()
 
     async def test_dead_run_does_not_block_a_new_chain(self) -> None:
         # A run abandoned by recovery's _finalize keeps active_execution_id but its
         # active row is gone, so it must not lock the card out forever.
         enqueued, spawn, _ = await self._enqueue([_run(active_execution_id=uuid.uuid4())], [])
-        self.assertTrue(enqueued)
+        self.assertEqual(enqueued, board_run_service.ENQUEUE_STARTED)
         spawn.assert_called_once()
 
     async def test_skipped_dead_run_is_settled_not_left_running(self) -> None:
@@ -223,7 +226,7 @@ class EnqueueCardChainGuardTests(unittest.IsolatedAsyncioTestCase):
         # every other reader of the status column, such as the comment gate.
         dead = _run(active_execution_id=uuid.uuid4())
         enqueued, _, session = await self._enqueue([dead], [])
-        self.assertTrue(enqueued)
+        self.assertEqual(enqueued, board_run_service.ENQUEUE_STARTED)
         (run_write,) = session.writes("board_card_runs")
         self.assertEqual(run_write.compile().params["error"], "Execution is no longer running")
         self.assertIn("board_card_runs.status", str(run_write.whereclause))
@@ -233,7 +236,7 @@ class EnqueueCardChainGuardTests(unittest.IsolatedAsyncioTestCase):
         dead = _run(active_execution_id=uuid.uuid4())
         live = _run(active_execution_id=live_execution_id)
         enqueued, spawn, session = await self._enqueue([dead, live], [live_execution_id])
-        self.assertFalse(enqueued)
+        self.assertEqual(enqueued, board_run_service.ENQUEUE_BLOCKED)
         spawn.assert_not_called()
         self.assertEqual(session.writes("board_card_runs"), [])
 

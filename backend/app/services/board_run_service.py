@@ -377,12 +377,17 @@ async def _run_chain(
     start_index: int = 0,
     chain_length: int | None = None,
     initial_outputs: list[dict] | None = None,
+    first_run_id: uuid.UUID | None = None,
 ) -> None:
     """Execute a column's workflow chain for a card, sequentially, off the request path.
 
     ``links`` may be the tail of a chain (when resuming after a HITL/Codex pause), in which
     case ``start_index`` is the position of its first link and ``chain_length`` the length of
     the full chain, so run rows keep reporting "step n of m" over the original chain.
+
+    ``first_run_id`` is set when ``enqueue_card_chain`` already created and committed the
+    first run row as part of claiming the card: that row is reused here instead of creating
+    a duplicate, since the claim's whole point is for the row to exist before this task runs.
     """
     total = chain_length if chain_length is not None else len(links)
     chain_outputs: list[dict] = list(initial_outputs or [])
@@ -392,17 +397,23 @@ async def _run_chain(
             column_instructions = getattr(chain_column, "ai_instructions", None)
             for index, link in enumerate(links):
                 position = start_index + index
-                run = BoardCardRun(
-                    card_id=card_id,
-                    column_id=column_id,
-                    workflow_id=link["workflow_id"],
-                    workflow_name=link["workflow_name"],
-                    chain_position=position,
-                    chain_length=total,
-                    status="running",
+                run = (
+                    await db.get(BoardCardRun, first_run_id)
+                    if index == 0 and first_run_id
+                    else None
                 )
-                db.add(run)
-                await db.flush()
+                if run is None:
+                    run = BoardCardRun(
+                        card_id=card_id,
+                        column_id=column_id,
+                        workflow_id=link["workflow_id"],
+                        workflow_name=link["workflow_name"],
+                        chain_position=position,
+                        chain_length=total,
+                        status="running",
+                    )
+                    db.add(run)
+                    await db.flush()
 
                 context = await _load_card_context(db, card_id)
                 workflow = await db.get(Workflow, link["workflow_id"])
@@ -873,25 +884,62 @@ async def answer_card_comment(db, *, card, column, board) -> bool:
     return True
 
 
+ENQUEUE_STARTED = "started"
+ENQUEUE_BLOCKED = "blocked"
+ENQUEUE_NO_CHAIN = "no_chain"
+
+
 async def enqueue_card_chain(
     db, *, card, column, board, move: dict | None, rerun: bool, allow_advance: bool = True
-) -> bool:
-    """Start the column's workflow chain for a card.
+) -> str:
+    """Claim the card for a new chain and start it, inside this request's own transaction.
 
-    Returns False when the column has no chain or the card already has an active run.
-    Commits the ``running`` status flip before spawning the background task so the
-    task's fresh session sees it. "Active" means still alive, not merely labelled
-    ``running``, or an abandoned run locks the card out for good.
+    Returns ``ENQUEUE_BLOCKED`` when the card already has an active run, ``ENQUEUE_NO_CHAIN``
+    when the column has no workflow chain, or ``ENQUEUE_STARTED`` once the chain is spawned.
+    Callers that only care whether a chain is now running can still do
+    ``enqueue_card_chain(...) == ENQUEUE_STARTED``; the old boolean is deliberately not
+    accepted as a direct substitute for ``ENQUEUE_BLOCKED`` vs ``ENQUEUE_NO_CHAIN`` meant
+    two different things to a caller like ``move_card``.
+
+    The card row is locked for the rest of this transaction before the block check, so two
+    requests for the same card (concurrent, or back to back) serialize on it: the loser's
+    block check runs after the winner's commit, so it always sees the winner's run. The
+    first run row is created and committed here too, before the background task is ever
+    spawned, so the claim does not depend on the task having started: without this, two
+    sequential requests could both pass the check while the first task was still queued.
     """
+    locked = (
+        await db.execute(select(BoardCard.id).where(BoardCard.id == card.id).with_for_update())
+    ).first()
+    if locked is None:
+        return ENQUEUE_BLOCKED
     if await blocking_card_runs(db, card.id):
-        return False
+        return ENQUEUE_BLOCKED
     links = await _column_links(db, column.id)
     if not links:
         # No chain on this column. A card moved forward must still keep flowing right,
         # so pass it through to the next column (and the last one).
         if allow_advance and not rerun:
+            # _auto_advance opens its own session and updates this same card row, so
+            # the FOR UPDATE lock taken above must be released first: holding it while
+            # awaiting a second session that needs the same row is a self-deadlock
+            # Postgres cannot detect (only one side is ever blocked inside Postgres,
+            # the other is just an in-process await), so it hangs until the worker
+            # restarts instead of erroring out.
+            await db.commit()
             await _auto_advance(card_id=card.id, board_id=board.id, from_column_id=column.id)
-        return False
+        return ENQUEUE_NO_CHAIN
+    first_link = links[0]
+    first_run = BoardCardRun(
+        card_id=card.id,
+        column_id=column.id,
+        workflow_id=first_link["workflow_id"],
+        workflow_name=first_link["workflow_name"],
+        chain_position=0,
+        chain_length=len(links),
+        status="running",
+    )
+    db.add(first_run)
     card.run_status = "running"
     await db.commit()
     _spawn_chain(
@@ -902,8 +950,9 @@ async def enqueue_card_chain(
         move=move,
         rerun=rerun,
         allow_advance=allow_advance,
+        first_run_id=first_run.id,
     )
-    return True
+    return ENQUEUE_STARTED
 
 
 def _spawn_chain(
@@ -918,6 +967,7 @@ def _spawn_chain(
     start_index: int = 0,
     chain_length: int | None = None,
     initial_outputs: list[dict] | None = None,
+    first_run_id: uuid.UUID | None = None,
 ) -> None:
     """Start a chain run as a background task, holding a strong reference to it."""
     task = asyncio.create_task(
@@ -932,6 +982,7 @@ def _spawn_chain(
             start_index=start_index,
             chain_length=chain_length,
             initial_outputs=initial_outputs,
+            first_run_id=first_run_id,
         )
     )
     _BACKGROUND_CHAIN_TASKS.add(task)
