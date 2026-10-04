@@ -119,6 +119,8 @@ An alert cannot notify the workflow it is watching. That would be a loop, most o
 
 Notify runs are ordinary executions, so they appear in [execution history](../reference/execution-history.md) like any other run. A notify workflow that fails is recorded on the firing but never prevents the firing itself from being recorded.
 
+A notify workflow runs as the alert's owner, with their credentials and global variables, exactly as if they had run it themselves. Picking a workflow someone shared with you does not borrow that person's credentials. If the owner loses access to the notify workflow, the firing is still recorded but the notify run is skipped.
+
 ## Firing History
 
 Below the alert list is the firing history: what fired, when, the observed value against the threshold, the exact window that was evaluated, and the notify outcome.
@@ -143,6 +145,15 @@ For a "why did it fire" question, Chat quotes the actual observed value, the thr
 ## Sharing
 
 Alerts can be shared with individual users or with [teams](./teams-tab.md). People you share with can see the alert and its firing history. Only the owner can edit, pause, delete, or re-share it.
+
+### When workflow access is removed
+
+An alert on a single workflow keeps reading that workflow's run metrics, so removing someone's access to the workflow also decides what happens to their alerts on it:
+
+- **Removing a user or team share** asks the workflow owner whether to also stop that user's or team's alerts on the workflow. Stopping is the default. Stopped alerts are paused, not deleted, and each one is recorded as `alert.disable_on_access_revoke` in the [audit log](../reference/audit.md).
+- **Removing a team member or deleting a team** always stops the affected alerts, because the person making that change is not necessarily the workflow owner.
+- An alert is only stopped when its owner has no other path to the workflow, such as a direct share or another team.
+- Resuming or testing a paused alert checks the owner's access again, so a stopped alert cannot be switched back on or used to read the workflow's metrics without access. Pressing **Resume** without access shows a notification explaining that the workflow owner has to share it again first.
 
 ## Managing Alerts
 
