@@ -111,14 +111,20 @@ def _salvage_config(alert_type: str, raw: Any) -> dict[str, Any]:
     return merged
 
 
-def parse_draft_response(raw: str) -> tuple[AlertDraft | None, str | None]:
-    """Return (draft, clarification).
+def _clean_str(value: Any) -> str | None:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned if cleaned else None
+    return None
 
-    Both may be set at once. A partial answer still becomes a draft so the wizard
-    can move forward with what the model worked out, while the clarification says
-    what is left to decide. Only an answer with nothing usable in it returns
-    ``draft=None``, which keeps the wizard on step one showing the question.
-    """
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _extract_json_payload(raw: str) -> tuple[dict[str, Any] | None, str | None]:
     text = (raw or "").strip()
     if not text:
         return None, "The model returned an empty response."
@@ -138,6 +144,10 @@ def parse_draft_response(raw: str) -> tuple[AlertDraft | None, str | None]:
     if not isinstance(payload, dict):
         return None, raw.strip()
 
+    return payload, None
+
+
+def _extract_draft_fields(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     fields: dict[str, Any] = {}
     missing: list[str] = []
 
@@ -171,26 +181,42 @@ def parse_draft_response(raw: str) -> tuple[AlertDraft | None, str | None]:
     renotify_mode = payload.get("renotify_mode")
     if renotify_mode in _RENOTIFY_MODES:
         fields["renotify_mode"] = renotify_mode
-    cooldown = payload.get("cooldown_minutes")
-    if isinstance(cooldown, int) and not isinstance(cooldown, bool) and cooldown > 0:
+    cooldown = _positive_int(payload.get("cooldown_minutes"))
+    if cooldown is not None:
         fields["cooldown_minutes"] = cooldown
     elif renotify_mode == "cooldown":
         missing.append("how often to keep notifying")
 
-    name = payload.get("name")
-    if isinstance(name, str) and name.strip():
-        fields["name"] = name.strip()
+    name = _clean_str(payload.get("name"))
+    if name is not None:
+        fields["name"] = name
     else:
         missing.append("a name")
 
-    description = payload.get("description")
-    if isinstance(description, str) and description.strip():
-        fields["description"] = description.strip()
+    description = _clean_str(payload.get("description"))
+    if description is not None:
+        fields["description"] = description
 
     filled = payload.get("filled_fields")
     if isinstance(filled, list):
         fields["filled_fields"] = [str(item) for item in filled if isinstance(item, str)]
 
+    return fields, missing
+
+
+def parse_draft_response(raw: str) -> tuple[AlertDraft | None, str | None]:
+    """Return (draft, clarification).
+
+    Both may be set at once. A partial answer still becomes a draft so the wizard
+    can move forward with what the model worked out, while the clarification says
+    what is left to decide. Only an answer with nothing usable in it returns
+    ``draft=None``, which keeps the wizard on step one showing the question.
+    """
+    payload, err = _extract_json_payload(raw)
+    if payload is None:
+        return None, err
+
+    fields, missing = _extract_draft_fields(payload)
     if not fields:
         return None, raw.strip()
 

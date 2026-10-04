@@ -223,6 +223,117 @@ class TestParseDraftResponse(unittest.TestCase):
         self.assertIsNone(draft.cooldown_minutes)
         self.assertIn("how often", clarification)
 
+    def test_fenced_json_without_language_tag_is_unwrapped(self):
+        raw = '```\n{"name":"X","alert_type":"execution_count"}\n```'
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.name, "X")
+        self.assertEqual(draft.alert_type, "execution_count")
+
+    def test_json_array_returns_clarification_not_a_draft(self):
+        raw = '[{"name": "X"}]'
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNone(draft)
+        self.assertEqual(clarification, raw)
+
+    def test_whitespace_in_name_and_description_is_stripped(self):
+        raw = json.dumps(
+            {
+                "name": "  Invoice alert  ",
+                "description": "  Alerts on invoice failures  ",
+                "alert_type": "execution_count",
+            }
+        )
+        draft, _ = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.name, "Invoice alert")
+        self.assertEqual(draft.description, "Alerts on invoice failures")
+
+    def test_blank_or_non_string_name_and_description_are_handled(self):
+        raw = json.dumps(
+            {
+                "name": "   ",
+                "description": "   ",
+                "alert_type": "execution_count",
+            }
+        )
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertIsNone(draft.name)
+        self.assertIsNone(draft.description)
+        self.assertIn("a name", clarification)
+
+    def test_filled_fields_filters_non_string_items(self):
+        raw = json.dumps(
+            {
+                "name": "X",
+                "alert_type": "execution_count",
+                "filled_fields": ["name", 42, None, "alert_type"],
+            }
+        )
+        draft, _ = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.filled_fields, ["name", "alert_type"])
+
+    def test_boolean_cooldown_minutes_is_not_treated_as_int(self):
+        raw = json.dumps(
+            {
+                "name": "X",
+                "alert_type": "execution_count",
+                "renotify_mode": "cooldown",
+                "cooldown_minutes": True,
+            }
+        )
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.renotify_mode, "cooldown")
+        self.assertIsNone(draft.cooldown_minutes)
+        self.assertIn("how often", clarification)
+
+    def test_zero_or_negative_cooldown_minutes_is_ignored(self):
+        raw = json.dumps(
+            {
+                "name": "X",
+                "alert_type": "execution_count",
+                "renotify_mode": "cooldown",
+                "cooldown_minutes": 0,
+            }
+        )
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertIsNone(draft.cooldown_minutes)
+        self.assertIn("how often", clarification)
+
+    def test_multiple_missing_fields_are_joined_in_clarification(self):
+        raw = json.dumps(
+            {
+                "scope": "workflow",
+                "renotify_mode": "cooldown",
+            }
+        )
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertEqual(
+            clarification,
+            "Still needed: which kind of threshold to watch, which workflow to watch, how often to keep notifying, a name.",
+        )
+
+    def test_workflow_scope_with_valid_workflow_id(self):
+        wf_id = uuid.uuid4()
+        raw = json.dumps(
+            {
+                "name": "X",
+                "alert_type": "execution_count",
+                "scope": "workflow",
+                "workflow_id": str(wf_id),
+            }
+        )
+        draft, clarification = parse_draft_response(raw)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.workflow_id, wf_id)
+        self.assertEqual(draft.scope, "workflow")
+        self.assertIsNone(clarification)
+
 
 class TestDraftSystemPrompt(unittest.TestCase):
     def test_prompt_lists_the_available_workflows(self):
