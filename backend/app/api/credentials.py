@@ -212,6 +212,53 @@ def merge_credential_config_for_update(
             merged_config["secure"] = incoming_config["secure"]
         return merged_config
 
+    if credential_type == CredentialType.bearer:
+        merged_config = dict(existing_config)
+        incoming_token = str(incoming_config.get("bearer_token", "") or "").strip()
+        if incoming_token:
+            merged_config["bearer_token"] = incoming_token
+        return merged_config
+
+    if credential_type == CredentialType.smtp:
+        merged_config = dict(existing_config)
+        for key in ("smtp_server", "smtp_port", "smtp_email"):
+            incoming_value = str(incoming_config.get(key, "") or "").strip()
+            if incoming_value:
+                merged_config[key] = incoming_value
+        incoming_password = str(incoming_config.get("smtp_password", "") or "").strip()
+        if incoming_password:
+            merged_config["smtp_password"] = incoming_password
+        return merged_config
+
+    if credential_type == CredentialType.redis:
+        merged_config = dict(existing_config)
+        for key in ("redis_host", "redis_port", "redis_db"):
+            incoming_value = str(incoming_config.get(key, "") or "").strip()
+            if incoming_value:
+                merged_config[key] = incoming_value
+        incoming_password = str(incoming_config.get("redis_password", "") or "").strip()
+        if incoming_password:
+            merged_config["redis_password"] = incoming_password
+        return merged_config
+
+    if credential_type == CredentialType.cohere:
+        merged_config = dict(existing_config)
+        incoming_api_key = str(incoming_config.get("api_key", "") or "").strip()
+        if incoming_api_key:
+            merged_config["api_key"] = incoming_api_key
+        return merged_config
+
+    if credential_type == CredentialType.opencode:
+        merged_config = dict(existing_config)
+        incoming_api_key = str(incoming_config.get("api_key", "") or "").strip()
+        if incoming_api_key:
+            merged_config["api_key"] = incoming_api_key
+        if "base_url" in incoming_config:
+            incoming_base_url = str(incoming_config.get("base_url", "") or "").strip()
+            if incoming_base_url:
+                merged_config["base_url"] = incoming_base_url
+        return merged_config
+
     if credential_type != CredentialType.github:
         return incoming_config
 
@@ -356,6 +403,24 @@ def get_masked_value(credential_type: CredentialType, config: dict) -> str | Non
         if host:
             return f"{host} ({database})"
         return None
+    elif credential_type == CredentialType.bearer:
+        bearer_token = config.get("bearer_token", "")
+        return mask_api_key(bearer_token)
+    elif credential_type == CredentialType.smtp:
+        smtp_server = str(config.get("smtp_server", "")).strip()
+        smtp_email = str(config.get("smtp_email", "")).strip()
+        if smtp_email and smtp_server:
+            return f"{smtp_email} ({smtp_server})"
+        return smtp_server or None
+    elif credential_type == CredentialType.redis:
+        redis_host = str(config.get("redis_host", "")).strip()
+        redis_db = str(config.get("redis_db", "0")).strip() or "0"
+        if redis_host:
+            return f"{redis_host} (db {redis_db})"
+        return None
+    elif credential_type == CredentialType.cohere:
+        api_key = config.get("api_key", "")
+        return mask_api_key(api_key)
     return None
 
 
@@ -435,6 +500,20 @@ def get_public_credential_fields(
             "database": str(config.get("database", "")).strip() or None,
             "secure": str(bool(secure)).lower() if secure is not None else None,
         }
+    if credential_type == CredentialType.smtp:
+        return {
+            "smtp_server": str(config.get("smtp_server", "")).strip() or None,
+            "smtp_port": str(config.get("smtp_port", "")).strip() or None,
+            "smtp_email": str(config.get("smtp_email", "")).strip() or None,
+        }
+    if credential_type == CredentialType.redis:
+        return {
+            "redis_host": str(config.get("redis_host", "")).strip() or None,
+            "redis_port": str(config.get("redis_port", "")).strip() or None,
+            "redis_db": str(config.get("redis_db", "")).strip() or None,
+        }
+    if credential_type == CredentialType.opencode:
+        return {"base_url": str(config.get("base_url", "")).strip() or None}
     return {}
 
 
@@ -2184,6 +2263,38 @@ def validate_credential_config(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="ClickHouse credential requires host",
+            )
+    elif credential_type == CredentialType.bearer:
+        if "bearer_token" not in config or not str(config["bearer_token"]).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bearer credential requires bearer_token",
+            )
+    elif credential_type == CredentialType.smtp:
+        for field in ("smtp_server", "smtp_port", "smtp_email", "smtp_password"):
+            if field not in config or not str(config[field]).strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SMTP credential requires {field}",
+                )
+    elif credential_type == CredentialType.redis:
+        for field in ("redis_host", "redis_port"):
+            if field not in config or not str(config[field]).strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Redis credential requires {field}",
+                )
+    elif credential_type == CredentialType.cohere:
+        if "api_key" not in config or not str(config["api_key"]).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cohere credential requires api_key",
+            )
+    elif credential_type == CredentialType.opencode:
+        if "api_key" not in config or not str(config["api_key"]).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OpenCode credential requires api_key",
             )
 
 
