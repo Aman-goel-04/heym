@@ -363,6 +363,50 @@ class FileIdExtractionTests(unittest.TestCase):
         for value in (None, "", "not-a-file", 42, {}, {"file": {}}, []):
             self.assertIsNone(converter_node._extract_file_id(value))
 
+    def test_direct_uuid_instance(self) -> None:
+        self.assertEqual(converter_node._extract_file_id(_FILE_UUID), _FILE_UUID)
+
+    def test_all_supported_id_keys(self) -> None:
+        for key in ("file_id", "fileId", "fileID"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    converter_node._extract_file_id({key: str(_FILE_UUID)}),
+                    _FILE_UUID,
+                )
+
+    def test_supported_wrapper_keys(self) -> None:
+        for key in ("result", "data"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    converter_node._extract_file_id({key: {"id": str(_FILE_UUID)}}),
+                    _FILE_UUID,
+                )
+
+    def test_id_keys_take_precedence_over_wrapper_keys(self) -> None:
+        other_uuid = uuid.uuid4()
+        payload = {"id": str(_FILE_UUID), "file": str(other_uuid)}
+        self.assertEqual(converter_node._extract_file_id(payload), _FILE_UUID)
+
+    def test_invalid_higher_precedence_key_falls_through(self) -> None:
+        payload = {"id": "not-a-uuid", "file": str(_FILE_UUID)}
+        self.assertEqual(converter_node._extract_file_id(payload), _FILE_UUID)
+
+    def test_depth_limit_returns_none_when_exceeded(self) -> None:
+        within_limit = {"file": {"file": {"file": str(_FILE_UUID)}}}
+        self.assertEqual(converter_node._extract_file_id(within_limit), _FILE_UUID)
+
+        exceeded_limit = {"file": {"file": {"file": {"file": str(_FILE_UUID)}}}}
+        self.assertIsNone(converter_node._extract_file_id(exceeded_limit))
+
+    def test_parse_uuid_helper(self) -> None:
+        self.assertEqual(converter_node._parse_uuid(str(_FILE_UUID)), _FILE_UUID)
+        self.assertEqual(
+            converter_node._parse_uuid(f"https://example.com/{_FILE_UUID}"),
+            _FILE_UUID,
+        )
+        self.assertIsNone(converter_node._parse_uuid(""))
+        self.assertIsNone(converter_node._parse_uuid("not-a-uuid"))
+
 
 class OcrConversionTests(unittest.TestCase):
     def _run(
