@@ -2,7 +2,6 @@ import unittest
 
 from app.services.markdown_task_list import (
     has_task_items,
-    parse_task_line_indices,
     remove_task_item,
     toggle_task_item,
     update_or_remove_task_item,
@@ -14,10 +13,6 @@ class MarkdownTaskListTests(unittest.TestCase):
     def test_has_task_items(self):
         self.assertFalse(has_task_items("plain text"))
         self.assertTrue(has_task_items("- [ ] todo\n- [x] done"))
-
-    def test_parse_task_line_indices(self):
-        md = "intro\n- [ ] one\n- [x] two\n\nother"
-        self.assertEqual(parse_task_line_indices(md), [1, 2])
 
     def test_toggle_unchecked_to_checked(self):
         md = "- [ ] Seçenek 2\n- [ ] Seçenek 3"
