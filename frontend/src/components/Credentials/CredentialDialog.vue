@@ -464,7 +464,7 @@ watch(
         codexSignedInAccount.value =
           props.credential.public_fields?.account_id || "";
         baseUrl.value =
-          props.credential.type === "jira"
+          props.credential.type === "jira" || props.credential.type === "opencode"
             ? props.credential.public_fields?.base_url ?? ""
             : "";
         jiraEmail.value =
@@ -494,14 +494,32 @@ watch(
         imapPassword.value = "";
         imapMailbox.value = "INBOX";
         imapUseSsl.value = true;
-        smtpServer.value = "";
-        smtpPort.value = "587";
-        smtpEmail.value = "";
-        smtpPassword.value = "";
-        redisHost.value = "";
-        redisPort.value = "6379";
-        redisPassword.value = "";
-        redisDb.value = "0";
+        smtpServer.value =
+          props.credential.type === "smtp"
+            ? props.credential.public_fields?.smtp_server ?? ""
+            : "";
+        smtpPort.value =
+          props.credential.type === "smtp"
+            ? props.credential.public_fields?.smtp_port ?? "587"
+            : "587";
+        smtpEmail.value =
+          props.credential.type === "smtp"
+            ? props.credential.public_fields?.smtp_email ?? ""
+            : "";
+        smtpPassword.value = ""; // secret, never pre-filled, same as every other type
+        redisHost.value =
+          props.credential.type === "redis"
+            ? props.credential.public_fields?.redis_host ?? ""
+            : "";
+        redisPort.value =
+          props.credential.type === "redis"
+            ? props.credential.public_fields?.redis_port ?? "6379"
+            : "6379";
+        redisPassword.value = ""; // secret, never pre-filled, same as every other type
+        redisDb.value =
+          props.credential.type === "redis"
+            ? props.credential.public_fields?.redis_db ?? "0"
+            : "0";
         clickhouseHost.value =
           props.credential.type === "clickhouse"
             ? props.credential.public_fields?.host ?? ""
