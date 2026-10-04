@@ -7,7 +7,7 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.db.session import async_session_maker, engine
+from app.db.session import engine
 
 logger = logging.getLogger("distributed_lock")
 
@@ -147,27 +147,6 @@ class DistributedLockService:
             await self._leader_conn.execute(text("SELECT 1"))
             return True
         except Exception:
-            return False
-
-    async def check_cron_execution(
-        self,
-        workflow_id: str,
-        node_id: str,
-        minute_key: str,
-    ) -> bool:
-        lock_key = f"cron:{workflow_id}:{node_id}:{minute_key}"
-        lock_id = _string_to_lock_id(lock_key)
-
-        try:
-            async with async_session_maker() as db:
-                result = await db.execute(
-                    text("SELECT pg_try_advisory_lock(:lock_id)"),
-                    {"lock_id": lock_id},
-                )
-                row = result.fetchone()
-                return row[0] if row else False
-        except Exception as e:
-            logger.warning("Failed to check cron execution lock: %s", e)
             return False
 
 
