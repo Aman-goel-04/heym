@@ -115,38 +115,48 @@ def _csv_to_json(text: object, delimiter: str, has_header: bool, trim_values: bo
     ]
 
 
+def _infer_fieldnames(rows: list) -> list[str]:
+    """Collect unique field names from dict rows in order of first appearance."""
+    seen: set[object] = set()
+    fieldnames: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+    return fieldnames
+
+
 def _json_to_csv(
     value: object, delimiter: str, include_header: bool, columns: list[str] | None
 ) -> str:
     """Build CSV text from a list of dicts (or lists), escaping per RFC 4180."""
     rows = _coerce_rows(value)
+    if not rows:
+        return ""
+
     buffer = io.StringIO()
-    if rows and isinstance(rows[0], dict):
-        if columns is not None:
-            fieldnames = columns
-        else:
-            fieldnames = []
-            for row in rows:
-                if isinstance(row, dict):
-                    for key in row:
-                        if key not in fieldnames:
-                            fieldnames.append(key)
-        writer = csv.DictWriter(
-            buffer,
-            fieldnames=fieldnames,
-            delimiter=delimiter,
-            extrasaction="ignore",
-            lineterminator="\n",
-        )
-        if include_header:
-            writer.writeheader()
-        for row in rows:
-            source = row if isinstance(row, dict) else {}
-            writer.writerow({name: source.get(name, "") for name in fieldnames})
-    else:
+    if not isinstance(rows[0], dict):
         writer = csv.writer(buffer, delimiter=delimiter, lineterminator="\n")
         for row in rows:
             writer.writerow(row if isinstance(row, list) else [row])
+        return buffer.getvalue().rstrip("\n")
+
+    fieldnames = columns if columns is not None else _infer_fieldnames(rows)
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=fieldnames,
+        delimiter=delimiter,
+        extrasaction="ignore",
+        lineterminator="\n",
+    )
+    if include_header:
+        writer.writeheader()
+    for row in rows:
+        source = row if isinstance(row, dict) else {}
+        writer.writerow({name: source.get(name, "") for name in fieldnames})
     return buffer.getvalue().rstrip("\n")
 
 
