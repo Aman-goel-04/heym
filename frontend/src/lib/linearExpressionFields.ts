@@ -31,6 +31,46 @@ const listOperations = new Set([
   "listComments",
 ]);
 
+const teamOperations = new Set([
+  "listIssues",
+  "createIssue",
+  "updateIssue",
+  "listWorkflowStates",
+  "listTeamMembers",
+]);
+
+const projectOperations = new Set([
+  "listIssues",
+  "createIssue",
+  "updateIssue",
+]);
+
+const issueIdOperations = new Set([
+  "getIssue",
+  "updateIssue",
+  "deleteIssue",
+  "addIssueLink",
+  "createComment",
+  "listComments",
+]);
+
+const commentIdOperations = new Set([
+  "updateComment",
+  "deleteComment",
+  "resolveComment",
+  "unresolveComment",
+]);
+
+const issueDetailOperations = new Set([
+  "createIssue",
+  "updateIssue",
+]);
+
+const commentBodyOperations = new Set([
+  "createComment",
+  "updateComment",
+]);
+
 function appendPaginationFields(
   fields: LinearExpressionField[],
   context: LinearExpressionFieldContext,
@@ -53,56 +93,35 @@ export function getLinearExpressionFields(
     appendPaginationFields(fields, context);
   }
 
-  if (
-    op === "listIssues" ||
-    op === "createIssue" ||
-    op === "updateIssue" ||
-    op === "listWorkflowStates" ||
-    op === "listTeamMembers"
-  ) {
+  if (teamOperations.has(op)) {
     fields.push({ key: "linearTeamId", label: "Team ID" });
   }
 
-  if (op === "listIssues" || op === "createIssue" || op === "updateIssue") {
+  if (projectOperations.has(op)) {
     fields.push({ key: "linearProjectId", label: "Project ID" });
   }
 
-  if (
-    op === "getIssue" ||
-    op === "updateIssue" ||
-    op === "deleteIssue" ||
-    op === "addIssueLink" ||
-    op === "createComment" ||
-    op === "listComments"
-  ) {
+  if (issueIdOperations.has(op)) {
     fields.push({ key: "linearIssueId", label: "Issue ID or Identifier" });
   }
 
-  if (
-    op === "updateComment" ||
-    op === "deleteComment" ||
-    op === "resolveComment" ||
-    op === "unresolveComment"
-  ) {
+  if (commentIdOperations.has(op)) {
     fields.push({ key: "linearCommentId", label: "Comment ID" });
   }
 
-  if (op === "createIssue" || op === "updateIssue") {
+  if (issueDetailOperations.has(op)) {
     fields.push({ key: "linearTitle", label: "Title" });
     fields.push({ key: "linearDescription", label: "Description" });
     fields.push({ key: "linearStateId", label: "State ID" });
+    fields.push({ key: "linearAssigneeId", label: "Assignee ID" });
+    fields.push({ key: "linearPriority", label: "Priority" });
   }
 
   if (op === "addIssueLink") {
     fields.push({ key: "linearIssueLinkUrl", label: "Link URL" });
   }
 
-  if (op === "createIssue" || op === "updateIssue") {
-    fields.push({ key: "linearAssigneeId", label: "Assignee ID" });
-    fields.push({ key: "linearPriority", label: "Priority" });
-  }
-
-  if (op === "createComment" || op === "updateComment") {
+  if (commentBodyOperations.has(op)) {
     fields.push({ key: "linearCommentBody", label: "Comment Body" });
   }
 
