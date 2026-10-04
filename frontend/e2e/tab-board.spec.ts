@@ -777,74 +777,42 @@ test("shows the live canvas action after starting a card from its dialog", async
 });
 
 test("blocks dragging a running card into a different column", async ({ page }) => {
-  const wf = await createWorkflow(
-    page,
-    `Board Drag Guard WF ${Date.now()}`,
-    [
-      {
-        id: "wait_board_drag_guard",
-        type: "wait",
-        position: { x: 100, y: 100 },
-        data: { label: "waitBoardDragGuard", duration: 12_000 },
-      },
-      {
-        id: "output_board_drag_guard",
-        type: "output",
-        position: { x: 400, y: 100 },
-        data: { label: "out", message: "drag guard complete" },
-      },
-    ],
-    [
-      {
-        id: "edge_board_drag_guard",
-        source: "wait_board_drag_guard",
-        target: "output_board_drag_guard",
-      },
-    ],
-  );
+  // This guard is pure frontend behavior (the backend's own race guard is covered by
+  // the Python integration tests), so the card's "running" state is stubbed at the
+  // network boundary rather than driven by a real backend chain — a genuine run would
+  // need the board's Agentic Kanban Model mapper to succeed against a real LLM, which
+  // this account's test credential cannot do.
+  const mapperCredentialId = await setUpMapperCredential(page);
+  const { boardId, cardId, columns } = await createBoardWithCard(page, "still running", {
+    mapperCredentialId,
+  });
+  const backlog = columns.find((column) => column.name === "Backlog")!;
 
-  let activeExecutionId = "";
-  try {
-    const { boardId, cardId, columns } = await createBoardWithCard(page, "still running");
-    const backlog = columns.find((column) => column.name === "Backlog")!;
-    await page.request.patch(`/api/boards/${boardId}/columns/${backlog.id}`, {
-      data: { workflow_ids: [wf.id] },
-    });
-
-    await page.goto(`/?tab=board&board=${boardId}`);
-    await page.getByTestId(`board-card-${cardId}`).click();
-    await page.getByTestId("card-run-followup").click();
-
-    await expect
-      .poll(async () => {
-        const response = await page.request.get(`/api/boards/${boardId}/cards/${cardId}`);
-        const detail = (await response.json()) as {
-          runs: Array<{ active_execution_id: string | null }>;
-        };
-        activeExecutionId = detail.runs[0]?.active_execution_id ?? "";
-        return activeExecutionId;
-      })
-      .not.toBe("");
-    await page.keyboard.press("Escape");
-
-    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
-    await page.getByTestId(`board-card-${cardId}`).dispatchEvent("dragstart", { dataTransfer });
-    await page.getByTestId("board-column-Planning").dispatchEvent("drop", { dataTransfer });
-
-    await expect(page.getByRole("alert")).toContainText("still running");
-    await expect(page.getByTestId("board-column-Backlog").getByTestId(`board-card-${cardId}`))
-      .toBeVisible();
-    const state = await (await page.request.get(`/api/boards/${boardId}`)).json();
-    expect((state.cards as ApiCard[]).find((entry) => entry.id === cardId)?.column_id).toBe(
-      backlog.id,
-    );
-  } finally {
-    if (activeExecutionId) {
-      await page.request.post(`/api/workflows/${wf.id}/executions/${activeExecutionId}/cancel`);
+  await page.route(`**/api/boards/${boardId}`, async (route) => {
+    const response = await route.fetch();
+    const json = (await response.json()) as { cards: ApiCard[] };
+    for (const card of json.cards) {
+      if (card.id === cardId) card.run_status = "running";
     }
-    await deleteAllBoards(page);
-    await deleteWorkflow(page, wf.id);
-  }
+    await route.fulfill({ response, json });
+  });
+
+  await page.goto(`/?tab=board&board=${boardId}`);
+  await expect(page.getByTestId(`board-card-${cardId}`)).toBeVisible();
+
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  await page.getByTestId(`board-card-${cardId}`).dispatchEvent("dragstart", { dataTransfer });
+  await page.getByTestId("board-column-Planning").dispatchEvent("drop", { dataTransfer });
+
+  await expect(page.getByRole("alert")).toContainText("still running");
+  await expect(page.getByTestId("board-column-Backlog").getByTestId(`board-card-${cardId}`))
+    .toBeVisible();
+
+  await page.unroute(`**/api/boards/${boardId}`);
+  const state = await (await page.request.get(`/api/boards/${boardId}`)).json();
+  expect((state.cards as ApiCard[]).find((entry) => entry.id === cardId)?.column_id).toBe(
+    backlog.id,
+  );
 });
 
 test("disables the Run button while a follow-up round is in flight", async ({ page }) => {
