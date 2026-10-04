@@ -7,6 +7,65 @@ from importlib import import_module
 from app.services.node_execution.base import NodeExecutionContext
 
 
+def _build_data_table_sort_clauses(sort_str: str, columns: list) -> list:
+    """Build SQLAlchemy order_by clauses for a DataTable sort string.
+
+    Supports optional '-' prefix for descending order.
+    Row metadata ('id', 'table_id', 'created_at', 'updated_at', 'created_by', 'updated_by')
+    maps to real table columns unless overridden by a schema column of the same name.
+    User schema columns live in the JSONB 'data' blob. When column type is 'number',
+    numeric sort is performed via regex validation + cast to NUMERIC, falling back to NULL
+    for invalid/empty values so queries never fail.
+    NULLS LAST is explicitly applied.
+    'DataTableRow.id.asc()' is added as a secondary ordering key for deterministic LIMIT
+    unless already sorting by 'id'.
+    """
+    from sqlalchemy import Numeric, case, cast, null
+
+    from app.db.models import DataTableRow
+
+    if not isinstance(sort_str, str) or not sort_str:
+        return []
+
+    stripped = sort_str.strip()
+    if not stripped:
+        return []
+
+    descending = stripped.startswith("-")
+    col_name = stripped[1:].strip() if descending else stripped
+
+    schema_cols = {c["name"]: c for c in (columns or []) if isinstance(c, dict) and "name" in c}
+    meta_columns = {
+        "id": DataTableRow.id,
+        "table_id": DataTableRow.table_id,
+        "created_at": DataTableRow.created_at,
+        "updated_at": DataTableRow.updated_at,
+        "created_by": DataTableRow.created_by,
+        "updated_by": DataTableRow.updated_by,
+    }
+
+    if not col_name:
+        field = DataTableRow.created_at
+    elif col_name not in schema_cols and col_name in meta_columns:
+        field = meta_columns[col_name]
+    else:
+        raw_val = DataTableRow.data.op("->>")(col_name)
+        if schema_cols.get(col_name, {}).get("type") == "number":
+            num_regex = r"^[ \t]*[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?[ \t]*$"
+            field = case(
+                (raw_val.op("~")(num_regex), cast(raw_val, Numeric)),
+                else_=null(),
+            )
+        else:
+            field = raw_val
+
+    order_expr = field.desc().nulls_last() if descending else field.asc().nulls_last()
+    clauses = [order_expr]
+    if col_name != "id":
+        clauses.append(DataTableRow.id.asc())
+    return clauses
+
+
 def execute(ctx: NodeExecutionContext) -> object:
     """Execute the dataTable node."""
     _workflow_executor = import_module("app.services.workflow_executor")
@@ -111,10 +170,9 @@ def execute(ctx: NodeExecutionContext) -> object:
             if sort_template:
                 sort_str = self.evaluate_message_template(sort_template, inputs, node_id)
                 if sort_str:
-                    if sort_str.startswith("-"):
-                        query = query.order_by(DataTableRow.created_at.desc())
-                    else:
-                        query = query.order_by(DataTableRow.created_at.asc())
+                    sort_clauses = _build_data_table_sort_clauses(sort_str, columns)
+                    if sort_clauses:
+                        query = query.order_by(*sort_clauses)
 
             raw_limit = node_data.get("dataTableLimit")
             if raw_limit is not None and int(raw_limit) > 0:
@@ -140,10 +198,10 @@ def execute(ctx: NodeExecutionContext) -> object:
             sort_template = node_data.get("dataTableSort", "")
             if sort_template:
                 sort_str = self.evaluate_message_template(sort_template, inputs, node_id)
-                if sort_str and sort_str.startswith("-"):
-                    query = query.order_by(DataTableRow.created_at.desc())
-                else:
-                    query = query.order_by(DataTableRow.created_at.asc())
+                if sort_str:
+                    sort_clauses = _build_data_table_sort_clauses(sort_str, columns)
+                    if sort_clauses:
+                        query = query.order_by(*sort_clauses)
 
             raw_limit = node_data.get("dataTableLimit")
             if raw_limit is not None and int(raw_limit) > 0:
