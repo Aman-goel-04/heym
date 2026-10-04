@@ -894,6 +894,13 @@ async def enqueue_card_chain(
         # No chain on this column. A card moved forward must still keep flowing right,
         # so pass it through to the next column (and the last one).
         if allow_advance and not rerun:
+            # _auto_advance opens its own session and updates this same card row, so
+            # the FOR UPDATE lock taken above must be released first: holding it while
+            # awaiting a second session that needs the same row is a self-deadlock
+            # Postgres cannot detect (only one side is ever blocked inside Postgres,
+            # the other is just an in-process await), so it hangs until the worker
+            # restarts instead of erroring out.
+            await db.commit()
             await _auto_advance(card_id=card.id, board_id=board.id, from_column_id=column.id)
         return ENQUEUE_NO_CHAIN
     first_link = links[0]

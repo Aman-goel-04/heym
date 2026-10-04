@@ -200,5 +200,93 @@ class ConcurrentEnqueueRealPostgresTests(_RealBoardFixture):
         self.assertEqual(runs, [])
 
 
+class _RealFourColumnBoardFixture(unittest.IsolatedAsyncioTestCase):
+    """A board with no chain on any column from the gate onward, so a forward move
+    always falls into enqueue_card_chain's NO_CHAIN branch and calls the real,
+    unmocked _auto_advance."""
+
+    async def asyncSetUp(self) -> None:
+        self.user_id = uuid.uuid4()
+        self.board_id = uuid.uuid4()
+        self.column_ids = [uuid.uuid4() for _ in range(4)]
+        self.card_id = uuid.uuid4()
+
+        async with async_session_maker() as db:
+            db.add(
+                User(
+                    id=self.user_id,
+                    email=f"board-deadlock-{uuid.uuid4()}@example.com",
+                    hashed_password="pw",
+                    name="Board Deadlock Test User",
+                )
+            )
+            await db.flush()
+            db.add(Board(id=self.board_id, owner_id=self.user_id, name="Deadlock Test Board"))
+            await db.flush()
+            for position, (column_id, name) in enumerate(
+                zip(self.column_ids, ["Backlog", "Planning", "Development", "Review"])
+            ):
+                db.add(
+                    BoardColumn(id=column_id, board_id=self.board_id, name=name, position=position)
+                )
+            await db.flush()
+            db.add(
+                BoardCard(
+                    id=self.card_id,
+                    board_id=self.board_id,
+                    column_id=self.column_ids[2],
+                    title="Deadlock test card",
+                    run_status="idle",
+                )
+            )
+            await db.commit()
+
+        self.card = SimpleNamespace(id=self.card_id, run_status="idle")
+        self.target_column = SimpleNamespace(id=self.column_ids[2])
+        self.board = SimpleNamespace(id=self.board_id, owner_id=self.user_id)
+
+    async def asyncTearDown(self) -> None:
+        async with async_session_maker() as db:
+            await db.execute(delete(BoardCardRun).where(BoardCardRun.card_id == self.card_id))
+            await db.execute(delete(BoardCard).where(BoardCard.id == self.card_id))
+            await db.execute(delete(BoardColumn).where(BoardColumn.id.in_(self.column_ids)))
+            await db.execute(delete(Board).where(Board.id == self.board_id))
+            await db.execute(delete(User).where(User.id == self.user_id))
+            await db.commit()
+        await engine.dispose()
+
+    async def test_moving_into_a_no_chain_column_does_not_deadlock_with_auto_advance(
+        self,
+    ) -> None:
+        """Regression for the deadlock mbakgun found in review: enqueue_card_chain
+        held its FOR UPDATE lock on the card row across the call into _auto_advance,
+        which opens its own session and updates that same row to move the card
+        forward. Two sessions wanting the same row, one waiting in-process rather
+        than inside Postgres, is a deadlock Postgres's own detector cannot see, so
+        it must be verified against the real, unmocked _auto_advance, not a mock.
+        """
+        async with async_session_maker() as db:
+            result = await asyncio.wait_for(
+                board_run_service.enqueue_card_chain(
+                    db,
+                    card=self.card,
+                    column=self.target_column,
+                    board=self.board,
+                    move={"from_column": "Planning", "to_column": "Development"},
+                    rerun=False,
+                    allow_advance=True,
+                ),
+                timeout=10,
+            )
+
+        self.assertEqual(result, board_run_service.ENQUEUE_NO_CHAIN)
+
+        async with async_session_maker() as db:
+            card = await db.get(BoardCard, self.card_id)
+            # _auto_advance cascaded the card into the next column (Review), since
+            # neither Development nor Review has a chain to run.
+            self.assertEqual(card.column_id, self.column_ids[3])
+
+
 if __name__ == "__main__":
     unittest.main()
