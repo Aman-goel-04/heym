@@ -1117,9 +1117,19 @@ class _FakeQuery:
         self._result = result
         self._count_result = count_result
         self.filter_args: list[tuple[object, ...]] = []
+        self.order_by_args: list[tuple[object, ...]] = []
+        self.limit_val: int | None = None
 
     def filter(self, *_args: object) -> "_FakeQuery":
         self.filter_args.append(_args)
+        return self
+
+    def order_by(self, *_args: object) -> "_FakeQuery":
+        self.order_by_args.append(_args)
+        return self
+
+    def limit(self, val: int) -> "_FakeQuery":
+        self.limit_val = val
         return self
 
     def first(self) -> object:
@@ -1497,6 +1507,117 @@ class WorkflowExecutorDataTableNodeTests(unittest.TestCase):
         self.assertIn("data_table_rows.created_at", operator_sql)
         self.assertIn("ILIKE", operator_sql.upper())
 
+    def test_find_uses_sort_clauses_for_data_and_metadata_columns(self) -> None:
+        from sqlalchemy.dialects import postgresql
+
+        table_id = uuid.uuid4()
+        table = SimpleNamespace(
+            id=table_id,
+            owner_id=uuid.uuid4(),
+            columns=[
+                {"name": "status", "type": "string"},
+                {"name": "score", "type": "number"},
+            ],
+        )
+        row = SimpleNamespace(
+            id=uuid.uuid4(),
+            data={"status": "active", "score": "95"},
+            created_at="2026-06-04T12:00:00Z",
+        )
+        fake_db = _FakeDataTableSession(table, existing_row=[row])
+        nodes = [
+            {
+                "id": "dt",
+                "type": "dataTable",
+                "data": {
+                    "label": "dataTable",
+                    "dataTableId": str(table_id),
+                    "dataTableOperation": "find",
+                    "dataTableSort": "-score",
+                    "dataTableLimit": 5,
+                },
+            }
+        ]
+        executor = WorkflowExecutor(nodes=nodes, edges=[], actor_user_id=table.owner_id)
+
+        with patch("app.db.session.SessionLocal", return_value=fake_db):
+            result = executor.execute_node("dt", {})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.output["operation"], "find")
+        self.assertIsNotNone(fake_db.last_row_query)
+        self.assertEqual(fake_db.last_row_query.limit_val, 5)
+        self.assertEqual(len(fake_db.last_row_query.order_by_args), 1)
+        sort_clauses = fake_db.last_row_query.order_by_args[0]
+        self.assertEqual(len(sort_clauses), 3)
+        sort_sql = " ".join(
+            str(
+                clause.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            for clause in sort_clauses
+        )
+        self.assertIn("data ->> 'score'", sort_sql)
+        self.assertIn("CAST", sort_sql.upper())
+        self.assertIn("NUMERIC", sort_sql.upper())
+        self.assertIn("DESC NULLS LAST", sort_sql.upper())
+        self.assertIn("data_table_rows.created_at ASC", sort_sql)
+        self.assertIn("data_table_rows.id ASC", sort_sql)
+
+    def test_get_all_uses_sort_clauses(self) -> None:
+        from sqlalchemy.dialects import postgresql
+
+        table_id = uuid.uuid4()
+        table = SimpleNamespace(
+            id=table_id,
+            owner_id=uuid.uuid4(),
+            columns=[{"name": "name", "type": "string"}],
+        )
+        row = SimpleNamespace(
+            id=uuid.uuid4(),
+            data={"name": "Alice"},
+            created_at="2026-06-04T12:00:00Z",
+        )
+        fake_db = _FakeDataTableSession(table, existing_row=[row])
+        nodes = [
+            {
+                "id": "dt",
+                "type": "dataTable",
+                "data": {
+                    "label": "dataTable",
+                    "dataTableId": str(table_id),
+                    "dataTableOperation": "getAll",
+                    "dataTableSort": "name",
+                },
+            }
+        ]
+        executor = WorkflowExecutor(nodes=nodes, edges=[], actor_user_id=table.owner_id)
+
+        with patch("app.db.session.SessionLocal", return_value=fake_db):
+            result = executor.execute_node("dt", {})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.output["operation"], "getAll")
+        self.assertIsNotNone(fake_db.last_row_query)
+        self.assertEqual(len(fake_db.last_row_query.order_by_args), 1)
+        sort_clauses = fake_db.last_row_query.order_by_args[0]
+        self.assertEqual(len(sort_clauses), 3)
+        sort_sql = " ".join(
+            str(
+                clause.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            for clause in sort_clauses
+        )
+        self.assertIn("data ->> 'name'", sort_sql)
+        self.assertIn("ASC NULLS LAST", sort_sql.upper())
+        self.assertIn("data_table_rows.created_at ASC", sort_sql)
+        self.assertIn("data_table_rows.id ASC", sort_sql)
+
 
 class DataTableFilterClauseTests(unittest.TestCase):
     """Unit tests for the Mongo-style operator -> SQLAlchemy clause builder."""
@@ -1626,6 +1747,140 @@ class DataTableFilterClauseTests(unittest.TestCase):
         from app.services.workflow_executor import _build_data_table_filter_clauses
 
         self.assertEqual(_build_data_table_filter_clauses({}, []), [])
+
+
+class DataTableSortClauseTests(unittest.TestCase):
+    """Unit tests for the DataTable sort string -> SQLAlchemy order_by clause builder."""
+
+    @staticmethod
+    def _sql(clause: object) -> str:
+        from sqlalchemy.dialects import postgresql
+
+        return str(
+            clause.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+
+    def test_plain_string_column_asc(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("name", [{"name": "name", "type": "string"}])
+        self.assertEqual(len(clauses), 3)
+        sql0 = self._sql(clauses[0])
+        sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
+        self.assertIn("data ->> 'name'", sql0)
+        self.assertIn("ASC NULLS LAST", sql0.upper())
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
+
+    def test_prefixed_string_column_desc(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("-name", [{"name": "name", "type": "string"}])
+        self.assertEqual(len(clauses), 3)
+        sql0 = self._sql(clauses[0])
+        sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
+        self.assertIn("data ->> 'name'", sql0)
+        self.assertIn("DESC NULLS LAST", sql0.upper())
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
+
+    def test_number_column_asc_casts_to_numeric_with_regex(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("score", [{"name": "score", "type": "number"}])
+        self.assertEqual(len(clauses), 3)
+        sql0 = self._sql(clauses[0]).upper()
+        sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
+        self.assertIn("CASE WHEN", sql0)
+        self.assertIn("CAST", sql0)
+        self.assertIn("NUMERIC", sql0)
+        self.assertIn("ASC NULLS LAST", sql0)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
+
+    def test_number_column_desc_casts_to_numeric_with_regex(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("-score", [{"name": "score", "type": "number"}])
+        self.assertEqual(len(clauses), 3)
+        sql0 = self._sql(clauses[0]).upper()
+        sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
+        self.assertIn("CASE WHEN", sql0)
+        self.assertIn("CAST", sql0)
+        self.assertIn("NUMERIC", sql0)
+        self.assertIn("DESC NULLS LAST", sql0)
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
+
+    def test_meta_created_at_desc(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses(
+            "-created_at", [{"name": "score", "type": "number"}]
+        )
+        self.assertEqual(len(clauses), 2)
+        sql0 = self._sql(clauses[0])
+        sql1 = self._sql(clauses[1])
+        self.assertIn("data_table_rows.created_at", sql0)
+        self.assertNotIn("->>", sql0)
+        self.assertIn("DESC NULLS LAST", sql0.upper())
+        self.assertIn("data_table_rows.id ASC", sql1)
+
+    def test_meta_updated_at_asc(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("updated_at", [])
+        self.assertEqual(len(clauses), 3)
+        sql0 = self._sql(clauses[0])
+        sql1 = self._sql(clauses[1])
+        sql2 = self._sql(clauses[2])
+        self.assertIn("data_table_rows.updated_at", sql0)
+        self.assertNotIn("->>", sql0)
+        self.assertIn("ASC NULLS LAST", sql0.upper())
+        self.assertIn("data_table_rows.created_at ASC", sql1)
+        self.assertIn("data_table_rows.id ASC", sql2)
+
+    def test_meta_id_sort_does_not_duplicate_secondary_id(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("-id", [])
+        self.assertEqual(len(clauses), 1)
+        sql0 = self._sql(clauses[0])
+        self.assertIn("data_table_rows.id", sql0)
+        self.assertNotIn("->>", sql0)
+        self.assertIn("DESC NULLS LAST", sql0.upper())
+
+    def test_empty_or_none_sort_yields_no_clauses(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        self.assertEqual(_build_data_table_sort_clauses("", []), [])
+        self.assertEqual(_build_data_table_sort_clauses("   ", []), [])
+        self.assertEqual(_build_data_table_sort_clauses(None, []), [])  # type: ignore[arg-type]
+
+    def test_bare_minus_fallback_to_created_at_desc(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses("-", [])
+        self.assertEqual(len(clauses), 2)
+        sql0 = self._sql(clauses[0])
+        self.assertIn("data_table_rows.created_at", sql0)
+        self.assertIn("DESC NULLS LAST", sql0.upper())
+
+    def test_schema_column_shadowing_meta_uses_json(self) -> None:
+        from app.services.node_execution.nodes.data_table_node import _build_data_table_sort_clauses
+
+        clauses = _build_data_table_sort_clauses(
+            "created_at", [{"name": "created_at", "type": "string"}]
+        )
+        sql0 = self._sql(clauses[0])
+        self.assertIn("data ->> 'created_at'", sql0)
 
 
 class CredentialContextTeamShareTests(unittest.IsolatedAsyncioTestCase):
