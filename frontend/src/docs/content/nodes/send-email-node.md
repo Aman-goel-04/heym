@@ -20,7 +20,7 @@ The **Send Email** node sends emails via SMTP. Use it for notifications, alerts,
 | `bcc` | expression | Blind carbon-copy recipient(s). Comma-separated for multiple. Hidden from other recipients. |
 | `subject` | expression | Email subject |
 | `emailBody` | expression | Email body content |
-| `attachments` | expression | Comma-separated [Drive](./drive-node.md) file IDs to attach. Only files owned by the workflow owner can be attached. |
+| `attachments` | expression | Comma-separated [Drive](./drive-node.md) file IDs to attach. Only files owned by the workflow owner or shared with one of their teams can be attached. |
 
 ## Attachments
 
