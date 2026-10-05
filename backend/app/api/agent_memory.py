@@ -242,7 +242,7 @@ async def add_memory_edge(
     canvas_key = node_id[:128]
 
     def _after_edge_write(sync_sess: Session) -> None:
-        remove_conflicting_outgoing_edges_sync(
+        replaced_edge_nodes = remove_conflicting_outgoing_edges_sync(
             sync_sess,
             workflow_id,
             canvas_key,
@@ -250,7 +250,12 @@ async def add_memory_edge(
             row.relationship_type,
             tgt.id,
         )
-        prune_isolated_nodes_sync(sync_sess, workflow_id, canvas_key)
+        prune_isolated_nodes_sync(
+            sync_sess,
+            workflow_id,
+            canvas_key,
+            candidate_node_ids=frozenset({src.id, tgt.id}) | replaced_edge_nodes,
+        )
 
     await db.run_sync(_after_edge_write)
     await db.refresh(row)
@@ -292,7 +297,7 @@ async def update_memory_edge(
     await db.flush()
 
     def _after_edge_update(sync_sess: Session) -> None:
-        remove_conflicting_outgoing_edges_sync(
+        replaced_edge_nodes = remove_conflicting_outgoing_edges_sync(
             sync_sess,
             workflow_id,
             row.canvas_node_id,
@@ -300,7 +305,13 @@ async def update_memory_edge(
             row.relationship_type,
             row.target_node_id,
         )
-        prune_isolated_nodes_sync(sync_sess, workflow_id, row.canvas_node_id)
+        prune_isolated_nodes_sync(
+            sync_sess,
+            workflow_id,
+            row.canvas_node_id,
+            candidate_node_ids=frozenset({row.source_node_id, row.target_node_id})
+            | replaced_edge_nodes,
+        )
 
     await db.run_sync(_after_edge_update)
     await db.refresh(row)
@@ -329,13 +340,9 @@ async def delete_memory_edge(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory edge not found")
 
-    canvas_key = row.canvas_node_id
-    wf_id = row.workflow_id
+    # No pruning here: Undo re-creates the edge by looking up its endpoints by
+    # entity name, so a manual delete must never also remove a now-isolated
+    # endpoint, or Undo gets a 400 ("Source or target entity not found").
     await db.execute(delete(AgentMemoryEdge).where(AgentMemoryEdge.id == memory_edge_id))
     await db.flush()
-
-    def _after_edge_delete(sync_sess: Session) -> None:
-        prune_isolated_nodes_sync(sync_sess, wf_id, canvas_key)
-
-    await db.run_sync(_after_edge_delete)
     return {"status": "deleted"}
