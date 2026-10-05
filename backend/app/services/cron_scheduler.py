@@ -27,8 +27,10 @@ from app.services.cron_slot_state import (
     claim_cron_slot,
     cleanup_cron_slot_claims,
     cleanup_old_cleanup_slot_claims,
+    iso_week_slot,
 )
 from app.services.distributed_lock import lock_service
+from app.services.execution_history_maintenance import reclaim_execution_history_toast
 from app.services.global_variables_service import get_global_variables_context
 from app.services.hitl_service import build_default_public_base_url, persist_pending_hitl_execution
 from app.services.timezone_utils import get_configured_timezone
@@ -39,6 +41,8 @@ from app.services.workflow_executor import (
 )
 
 logger = logging.getLogger("cron_scheduler")
+
+EXECUTION_HISTORY_TOAST_RECLAIM_JOB = "execution_history_toast_reclaim"
 
 
 class CronScheduler:
@@ -54,6 +58,7 @@ class CronScheduler:
         self._last_response_cache_cleanup_date: str | None = None
         self._last_cron_slot_claim_cleanup_date: str | None = None
         self._last_alert_event_cleanup_date: str | None = None
+        self._last_execution_history_toast_reclaim_week: str | None = None
 
     async def start(self) -> None:
         if self._running:
@@ -91,6 +96,7 @@ class CronScheduler:
                 await self._check_file_access_token_cleanup()
                 await self._check_response_cache_cleanup()
                 await self._check_cron_slot_claim_cleanup()
+                await self._check_execution_history_toast_reclaim()
             except Exception as e:
                 logger.exception("Error in cron scheduler loop: %s", e)
             await asyncio.sleep(30)
@@ -628,6 +634,36 @@ class CronScheduler:
                     self._last_cron_slot_claim_cleanup_date = current_date
                 else:
                     logger.debug("Cron slot claim cleanup already handled by another worker")
+
+    async def _check_execution_history_toast_reclaim(self) -> None:
+        """Rewrite a bloated execution_history TOAST file, at most once per ISO week.
+
+        The week is settled as soon as this pass tries it: a lost claim, a busy
+        table, a failed rewrite or a crash all wait for next week instead of
+        retrying VACUUM FULL every 30 seconds.
+        """
+        tz = get_configured_timezone()
+        now = datetime.now(tz)
+        if not (now.hour == 4 and now.minute < 30):
+            return
+
+        current_week = iso_week_slot(now)
+        if self._last_execution_history_toast_reclaim_week == current_week:
+            return
+        self._last_execution_history_toast_reclaim_week = current_week
+
+        try:
+            can_reclaim = await claim_cleanup_slot(
+                job_name=EXECUTION_HISTORY_TOAST_RECLAIM_JOB,
+                slot_date=current_week,
+                worker_id=lock_service.worker_id,
+            )
+            if not can_reclaim:
+                logger.debug("execution_history TOAST reclaim already handled for %s", current_week)
+                return
+            await reclaim_execution_history_toast()
+        except Exception as e:
+            logger.exception("Error reclaiming execution_history TOAST space: %s", e)
 
     async def _maintain_run_queue(self) -> None:
         """Retire stale queued runs and hand waiting ones back to a returning main.
