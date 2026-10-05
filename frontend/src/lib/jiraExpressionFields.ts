@@ -43,19 +43,36 @@ export interface JiraExpressionField {
   label: string;
 }
 
+const issueMutationOperations = new Set([
+  "createIssue",
+  "updateIssue",
+]);
+
+const commentBodyOperations = new Set([
+  "createComment",
+  "updateComment",
+]);
+
+function appendPaginationFields(
+  fields: JiraExpressionField[],
+  op: string,
+): void {
+  fields.push({ key: "jiraLimit", label: "Limit" });
+  if (op === "searchIssues") {
+    fields.push({ key: "jiraNextPageToken", label: "Next Page Token" });
+  }
+  if (jiraStartAtPaginatedOperations.has(op)) {
+    fields.push({ key: "jiraStartAt", label: "Start At" });
+  }
+}
+
 /** Returns ordered expression-evaluate dialog slots for the given Jira operation. */
 export function getJiraExpressionFields(operation: string): JiraExpressionField[] {
   const op = operation || "searchIssues";
   const fields: JiraExpressionField[] = [];
 
   if (jiraPaginatedOperations.has(op)) {
-    fields.push({ key: "jiraLimit", label: "Limit" });
-    if (op === "searchIssues") {
-      fields.push({ key: "jiraNextPageToken", label: "Next Page Token" });
-    }
-    if (jiraStartAtPaginatedOperations.has(op)) {
-      fields.push({ key: "jiraStartAt", label: "Start At" });
-    }
+    appendPaginationFields(fields, op);
   }
 
   if (op === "createIssue") {
@@ -73,7 +90,7 @@ export function getJiraExpressionFields(operation: string): JiraExpressionField[
     fields.push({ key: "jiraFields", label: "Issue Fields" });
   }
 
-  if (op === "createIssue" || op === "updateIssue") {
+  if (issueMutationOperations.has(op)) {
     fields.push({ key: "jiraSummary", label: "Summary" });
     fields.push({ key: "jiraDescription", label: "Description" });
     fields.push({ key: "jiraAssigneeAccountId", label: "Assignee Account ID / Username" });
@@ -84,7 +101,7 @@ export function getJiraExpressionFields(operation: string): JiraExpressionField[
     fields.push({ key: "jiraCommentId", label: "Comment ID" });
   }
 
-  if (op === "createComment" || op === "updateComment") {
+  if (commentBodyOperations.has(op)) {
     fields.push({ key: "jiraCommentBody", label: "Comment Body" });
   }
 

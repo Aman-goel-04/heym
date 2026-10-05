@@ -174,4 +174,24 @@ describe("getJiraExpressionFields", () => {
 
     expect(keys).toEqual(["jiraAccountId"]);
   });
+
+  it("falls back to searchIssues when operation is empty or undefined", () => {
+    const defaultKeys = getJiraExpressionFields("").map((f) => f.key);
+    expect(defaultKeys).toEqual([
+      "jiraLimit",
+      "jiraNextPageToken",
+      "jiraStartAt",
+      "jiraJql",
+      "jiraFields",
+    ]);
+
+    const undefinedKeys = getJiraExpressionFields(undefined as unknown as string).map(
+      (f) => f.key,
+    );
+    expect(undefinedKeys).toEqual(defaultKeys);
+  });
+
+  it("returns empty array for unknown operations", () => {
+    expect(getJiraExpressionFields("unknownOperation")).toEqual([]);
+  });
 });
