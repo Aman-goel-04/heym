@@ -22,6 +22,7 @@ from app.services.auth import (
     create_access_token,
     create_refresh_token,
     hash_password,
+    read_refresh_claims,
     revoke_refresh_token,
     rotate_refresh_token,
     store_refresh_token,
@@ -93,14 +94,10 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie("refresh_token", path=_REFRESH_COOKIE_PATH)
 
 
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(
-    user_data: UserCreate,
-    request: Request,
-    response: Response,
-    db: AsyncSession = Depends(get_db),
-) -> TokenResponse:
-    ip = get_client_ip(request)
+async def register_account(
+    db: AsyncSession, user_data: UserCreate, ip: str, *, client: str | None = None
+) -> User:
+    """Apply every registration rule and create the user, or raise."""
     allowed, retry_after = register_limiter.is_allowed(ip)
     if not allowed:
         raise HTTPException(
@@ -115,6 +112,7 @@ async def register(
             outcome=OUTCOME_DENIED,
             actor_email=user_data.email,
             reason="registration_disabled",
+            client=client,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -130,6 +128,7 @@ async def register(
             outcome=OUTCOME_DENIED,
             actor_email=user_data.email,
             reason="password_login_disabled",
+            client=client,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -137,14 +136,13 @@ async def register(
         )
 
     result = await db.execute(select(User).where(User.email == user_data.email))
-    existing_user = result.scalar_one_or_none()
-
-    if existing_user:
+    if result.scalar_one_or_none():
         audit(
             action="auth.register",
             outcome=OUTCOME_FAILURE,
             actor_email=user_data.email,
             reason="email_already_registered",
+            client=client,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -159,6 +157,60 @@ async def register(
     db.add(user)
     await db.flush()
     await db.refresh(user)
+    return user
+
+
+async def password_sign_in(
+    db: AsyncSession, user_data: UserLogin, ip: str, *, client: str | None = None
+) -> User:
+    """Apply every password sign-in rule and return the user, or raise."""
+    allowed, retry_after = login_limiter.is_allowed(ip)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    sso_row = await get_sso_settings(db)
+    if password_login_blocked(sso_row, user_data.email):
+        audit(
+            action="auth.login",
+            outcome=OUTCOME_DENIED,
+            actor_email=user_data.email,
+            reason="password_login_disabled",
+            client=client,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password sign-in is disabled on this instance. Use SSO.",
+        )
+
+    result = await db.execute(select(User).where(User.email == user_data.email))
+    user = result.scalar_one_or_none()
+    if user is None or not verify_password(user_data.password, user.hashed_password):
+        audit(
+            action="auth.login",
+            outcome=OUTCOME_FAILURE,
+            actor_email=user_data.email,
+            reason="unknown_email" if user is None else "bad_password",
+            client=client,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+    return user
+
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    user_data: UserCreate,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
+    user = await register_account(db, user_data, get_client_ip(request))
 
     access_token = create_access_token(user.id)
     refresh_token = create_refresh_token(user.id)
@@ -176,42 +228,7 @@ async def login(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
-    ip = get_client_ip(request)
-    allowed, retry_after = login_limiter.is_allowed(ip)
-    if not allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts. Try again later.",
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    sso_row = await get_sso_settings(db)
-    if password_login_blocked(sso_row, user_data.email):
-        audit(
-            action="auth.login",
-            outcome=OUTCOME_DENIED,
-            actor_email=user_data.email,
-            reason="password_login_disabled",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Password sign-in is disabled on this instance. Use SSO.",
-        )
-
-    result = await db.execute(select(User).where(User.email == user_data.email))
-    user = result.scalar_one_or_none()
-
-    if user is None or not verify_password(user_data.password, user.hashed_password):
-        audit(
-            action="auth.login",
-            outcome=OUTCOME_FAILURE,
-            actor_email=user_data.email,
-            reason="unknown_email" if user is None else "bad_password",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+    user = await password_sign_in(db, user_data, get_client_ip(request))
 
     access_token = create_access_token(user.id)
     refresh_token = create_refresh_token(user.id)
@@ -237,13 +254,24 @@ async def refresh_tokens(
             detail="Refresh token missing",
         )
     token_data = TokenRefresh(refresh_token=raw_refresh)  # type: ignore[assignment]
-    user_id = verify_refresh_token(token_data.refresh_token)
-
-    if user_id is None:
+    claims = read_refresh_claims(token_data.refresh_token)
+    if claims is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
+    if claims.client is not None:
+        audit(
+            action="auth.token_refresh",
+            outcome=OUTCOME_DENIED,
+            actor_id=claims.user_id,
+            reason="client_bound_token",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This token can only be refreshed by the client it was issued to",
+        )
+    user_id = claims.user_id
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()

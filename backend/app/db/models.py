@@ -2456,6 +2456,51 @@ class SsoSettings(Base):
     )
 
 
+WORK_INTEGRATION_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
+
+
+class WorkIntegration(Base):
+    """The singleton link to a Heym Work deployment. The key is stored as a digest only."""
+
+    __tablename__ = "work_integrations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=lambda: WORK_INTEGRATION_ID
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    work_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    handshake_nonce: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    handshake_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_work_version: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    last_license_status: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    updated_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WorkSsoCode(Base):
+    """A one-time code that hands an SSO sign-in to Heym Work. Stored as a digest only."""
+
+    __tablename__ = "work_sso_codes"
+
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ClusterInstance(Base):
     """One Heym deployment sharing this database. Upserted by all its processes."""
 

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import _set_auth_cookies
 from app.api.deps import get_client_ip
 from app.config import settings
-from app.db.models import SsoSettings, User
+from app.db.models import SsoSettings, User, WorkIntegration
 from app.db.session import get_db
 from app.models.schemas import SsoStatusResponse
 from app.services.audit_log import OUTCOME_DENIED, OUTCOME_FAILURE, audit
@@ -34,6 +34,14 @@ from app.services.sso_settings import (
     decrypt_client_secret,
     email_domain_allowed,
     get_sso_settings,
+)
+from app.services.work_integration import (
+    WORK_CLIENT,
+    create_sso_code,
+    get_work_integration,
+    sso_callback_target,
+    sso_failure_target,
+    valid_work_state,
 )
 
 router = APIRouter()
@@ -57,13 +65,21 @@ def safe_next_path(candidate: str | None) -> str:
     return candidate
 
 
-def _encode_transaction(state: str, nonce: str, code_verifier: str, next_path: str) -> str:
+def _encode_transaction(
+    state: str,
+    nonce: str,
+    code_verifier: str,
+    next_path: str,
+    *,
+    client: str | None = None,
+    work_state: str | None = None,
+) -> str:
     """Sign the in-flight login state for the browser cookie.
 
     The PKCE verifier lives here and never in the ``state`` parameter: ``state`` round-trips
     through the provider, and a signed JWT is not an encrypted one.
     """
-    payload = {
+    payload: dict[str, object] = {
         "type": _TX_TYPE,
         "state": state,
         "nonce": nonce,
@@ -71,6 +87,9 @@ def _encode_transaction(state: str, nonce: str, code_verifier: str, next_path: s
         "next": next_path,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=_TX_TTL_MINUTES),
     }
+    if client is not None:
+        payload["client"] = client
+        payload["work_state"] = work_state
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -82,6 +101,12 @@ def _decode_transaction(token: str | None) -> dict | None:
     except jwt.PyJWTError:
         return None
     return payload if payload.get("type") == _TX_TYPE else None
+
+
+def _failure_url(work_row: WorkIntegration | None, reason: str) -> str:
+    if work_row is not None and work_row.enabled and work_row.work_url:
+        return sso_failure_target(work_row.work_url, reason)
+    return f"/login?{urlencode({'sso_error': reason})}"
 
 
 @router.get("/status", response_model=SsoStatusResponse)
@@ -100,8 +125,18 @@ async def sso_status(db: AsyncSession = Depends(get_db)) -> SsoStatusResponse:
 async def sso_login(
     request: Request,
     next: str | None = None,
+    client: str | None = None,
+    work_state: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
+    work_row: WorkIntegration | None = None
+    if client is not None:
+        if client != WORK_CLIENT or not valid_work_state(work_state):
+            return RedirectResponse(url="/login?sso_error=invalid_request", status_code=302)
+        work_row = await get_work_integration(db)
+        if not (work_row.enabled and work_row.work_url):
+            return RedirectResponse(url="/login?sso_error=sso_disabled", status_code=302)
+
     allowed, retry_after = login_limiter.is_allowed(get_client_ip(request))
     if not allowed:
         raise HTTPException(
@@ -112,14 +147,16 @@ async def sso_login(
 
     row = await get_sso_settings(db)
     if not (row.enabled and row.issuer and row.client_id):
-        return RedirectResponse(url="/login?sso_error=sso_disabled", status_code=302)
+        return RedirectResponse(url=_failure_url(work_row, "sso_disabled"), status_code=302)
     if not decrypt_client_secret(row.encrypted_client_secret):
-        return RedirectResponse(url="/login?sso_error=sso_disabled", status_code=302)
+        return RedirectResponse(url=_failure_url(work_row, "sso_disabled"), status_code=302)
 
     try:
         discovery = await fetch_discovery(row.issuer)
     except Exception:  # noqa: BLE001 - the browser gets one error code, never provider text
-        return RedirectResponse(url="/login?sso_error=token_exchange_failed", status_code=302)
+        return RedirectResponse(
+            url=_failure_url(work_row, "token_exchange_failed"), status_code=302
+        )
 
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
@@ -138,7 +175,14 @@ async def sso_login(
     response = RedirectResponse(url=auth_url, status_code=302)
     response.set_cookie(
         key=_TX_COOKIE,
-        value=_encode_transaction(state, nonce, code_verifier, safe_next_path(next)),
+        value=_encode_transaction(
+            state,
+            nonce,
+            code_verifier,
+            safe_next_path(next),
+            client=WORK_CLIENT if work_row is not None else None,
+            work_state=work_state if work_row is not None else None,
+        ),
         httponly=True,
         samesite="lax",
         secure=request.url.scheme == "https",
@@ -207,16 +251,18 @@ async def sso_callback(
     error: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
+    transaction = _decode_transaction(request.cookies.get(_TX_COOKIE))
+    work_row: WorkIntegration | None = None
+    if transaction is not None and transaction.get("client") == WORK_CLIENT:
+        work_row = await get_work_integration(db)
+
     def failure(reason: str) -> RedirectResponse:
         # The provider's own error text is never echoed: it is an XSS surface and leaks
         # configuration detail to anyone who can reach the login page.
-        response = RedirectResponse(
-            url=f"/login?{urlencode({'sso_error': reason})}", status_code=302
-        )
+        response = RedirectResponse(url=_failure_url(work_row, reason), status_code=302)
         response.delete_cookie(_TX_COOKIE, path=_TX_COOKIE_PATH)
         return response
 
-    transaction = _decode_transaction(request.cookies.get(_TX_COOKIE))
     if transaction is None or not state or transaction.get("state") != state:
         audit(action="auth.sso_login", outcome=OUTCOME_FAILURE, reason="state_mismatch")
         return failure("state_mismatch")
@@ -266,6 +312,22 @@ async def sso_callback(
             reason=rejection.code,
         )
         return failure(rejection.code)
+
+    if transaction.get("client") == WORK_CLIENT:
+        if work_row is None or not (work_row.enabled and work_row.work_url):
+            return failure("sso_disabled")
+        code = await create_sso_code(db, user.id)
+        # Work exchanges the code right after this redirect; it must already be committed.
+        await db.commit()
+        response = RedirectResponse(
+            url=sso_callback_target(
+                work_row.work_url, code, str(transaction.get("work_state") or "")
+            ),
+            status_code=302,
+        )
+        response.delete_cookie(_TX_COOKIE, path=_TX_COOKIE_PATH)
+        audit(action="auth.sso_login", actor=user, client=WORK_CLIENT)
+        return response
 
     access_token = create_access_token(user.id)
     refresh_token = create_refresh_token(user.id)

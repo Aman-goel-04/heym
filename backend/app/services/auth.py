@@ -1,5 +1,6 @@
 import hashlib
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -28,26 +29,49 @@ def verify_password(plain_password: str, hashed_password: str | None) -> bool:
     return bcrypt.checkpw(password_bytes, hashed_bytes)
 
 
-def create_access_token(user_id: uuid.UUID) -> str:
+@dataclass(frozen=True)
+class TokenClaims:
+    """Identity carried by an access or refresh token."""
+
+    user_id: uuid.UUID
+    client: str | None
+    key_version: str | None
+
+
+def _add_client_claims(
+    payload: dict[str, object], client: str | None, key_version: str | None
+) -> None:
+    if client is not None:
+        payload["cli"] = client
+        payload["ckv"] = key_version or ""
+
+
+def create_access_token(
+    user_id: uuid.UUID, *, client: str | None = None, key_version: str | None = None
+) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=settings.jwt_access_token_expire_minutes
     )
-    to_encode = {
+    to_encode: dict[str, object] = {
         "sub": str(user_id),
         "exp": expire,
         "type": "access",
     }
+    _add_client_claims(to_encode, client, key_version)
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(user_id: uuid.UUID) -> str:
+def create_refresh_token(
+    user_id: uuid.UUID, *, client: str | None = None, key_version: str | None = None
+) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_token_expire_days)
-    to_encode = {
+    to_encode: dict[str, object] = {
         "sub": str(user_id),
         "exp": expire,
         "type": "refresh",
         "jti": str(uuid.uuid4()),
     }
+    _add_client_claims(to_encode, client, key_version)
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -81,6 +105,36 @@ def verify_refresh_token(token: str) -> uuid.UUID | None:
     if user_id is None:
         return None
     return uuid.UUID(user_id)
+
+
+def _read_claims(token: str, expected_type: str) -> TokenClaims | None:
+    payload = decode_token(token)
+    if payload is None or payload.get("type") != expected_type:
+        return None
+    subject = payload.get("sub")
+    if subject is None:
+        return None
+    try:
+        user_id = uuid.UUID(str(subject))
+    except ValueError:
+        return None
+    client = payload.get("cli")
+    key_version = payload.get("ckv")
+    return TokenClaims(
+        user_id=user_id,
+        client=str(client) if client is not None else None,
+        key_version=str(key_version) if key_version is not None else None,
+    )
+
+
+def read_access_claims(token: str) -> TokenClaims | None:
+    """Return the claims of a valid access token, or None."""
+    return _read_claims(token, "access")
+
+
+def read_refresh_claims(token: str) -> TokenClaims | None:
+    """Return the claims of a valid refresh token, or None."""
+    return _read_claims(token, "refresh")
 
 
 def _hash_token(token: str) -> str:

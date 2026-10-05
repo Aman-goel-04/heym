@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.models import User
 from app.db.session import get_db
-from app.services.auth import verify_access_token
+from app.services.auth import read_access_claims
 from app.services.instance_admin import is_instance_admin
+from app.services.work_integration import WORK_CLIENT, WORK_KEY_HEADER, work_token_is_bound
 
 
 def get_client_ip(request: Request) -> str:
@@ -48,6 +49,20 @@ def _extract_token(
     return request.cookies.get("access_token")
 
 
+async def resolve_token_user_id(request: Request, token: str) -> uuid.UUID | None:
+    """Return the user a bearer token names, enforcing Heym Work's key binding."""
+    claims = read_access_claims(token)
+    if claims is None:
+        return None
+    if claims.client is None:
+        return claims.user_id
+    if claims.client == WORK_CLIENT and await work_token_is_bound(
+        request.headers.get(WORK_KEY_HEADER), claims.key_version
+    ):
+        return claims.user_id
+    return None
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
@@ -62,7 +77,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user_id = verify_access_token(token)
+    user_id = await resolve_token_user_id(request, token)
 
     if user_id is None:
         raise HTTPException(
@@ -100,7 +115,7 @@ async def get_current_user_id(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user_id = verify_access_token(token)
+    user_id = await resolve_token_user_id(request, token)
     if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -119,7 +134,7 @@ async def get_current_user_optional(
     if not token:
         return None
 
-    user_id = verify_access_token(token)
+    user_id = await resolve_token_user_id(request, token)
 
     if user_id is None:
         return None
