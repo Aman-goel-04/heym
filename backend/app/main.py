@@ -63,6 +63,8 @@ from app.api import (
     traces,
     vector_stores,
     voice,
+    work_channel,
+    work_integration_admin,
     workflows,
 )
 from app.api.deps import get_client_ip
@@ -328,6 +330,10 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(avatars.router, prefix="/api/avatars", tags=["Avatars"])
 app.include_router(sso_auth.router, prefix="/api/auth/sso", tags=["SSO"])
 app.include_router(sso_admin.router, prefix="/api/admin/sso", tags=["SSO Admin"])
+app.include_router(
+    work_integration_admin.router, prefix="/api/integrations/work", tags=["Heym Work"]
+)
+app.include_router(work_channel.router, prefix="/api/integrations/work", tags=["Heym Work Channel"])
 app.include_router(admin_cluster.router, prefix="/api/admin/cluster", tags=["Cluster Admin"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["Workflows"])
 app.include_router(agent_memory.router, prefix="/api/workflows", tags=["Agent Memory"])

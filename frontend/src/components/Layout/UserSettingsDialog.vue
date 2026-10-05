@@ -26,6 +26,7 @@ import {
 } from "@/services/plugins";
 import ClusterSettingsTab from "@/components/Layout/settings/ClusterSettingsTab.vue";
 import SsoSettingsTab from "@/components/Layout/settings/SsoSettingsTab.vue";
+import WorkIntegrationSettingsTab from "@/components/Layout/settings/WorkIntegrationSettingsTab.vue";
 import { useAuthStore } from "@/stores/auth";
 
 import AiDefaultsTab from "@/components/Layout/aiDefaults/AiDefaultsTab.vue";
@@ -41,7 +42,8 @@ type SettingsTab =
   | "observability"
   | "plugins"
   | "sso"
-  | "instances";
+  | "instances"
+  | "work";
 
 const props = defineProps<{
   open: boolean;
@@ -452,6 +454,15 @@ async function handleChangePassword(): Promise<void> {
             @click="activeTab = 'sso'"
           >
             SSO
+          </button>
+          <button
+            v-if="authStore.user?.is_admin"
+            type="button"
+            class="px-3 py-2 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap shrink-0"
+            :class="activeTab === 'work' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'"
+            @click="activeTab = 'work'"
+          >
+            Heym Work
           </button>
           <button
             v-if="authStore.user?.is_admin"
@@ -904,6 +915,9 @@ HEYM_PLUGIN_ADMIN_EMAILS=you@example.com</pre>
 
       <div v-else-if="activeTab === 'sso' && authStore.user?.is_admin">
         <SsoSettingsTab />
+      </div>
+      <div v-else-if="activeTab === 'work' && authStore.user?.is_admin">
+        <WorkIntegrationSettingsTab />
       </div>
     </div>
   </Dialog>
