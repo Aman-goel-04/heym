@@ -96,25 +96,31 @@ def remove_conflicting_outgoing_edges_sync(
     source_node_id: uuid.UUID,
     relationship_type: str,
     keep_target_node_id: uuid.UUID,
-) -> None:
+) -> set[uuid.UUID]:
     """Drop other outgoing edges from the same source with the same normalized slot type.
 
     Used so a new 'works for' or 'lives in' link replaces prior same-type edges without duplicates.
+    Returns the source and target node ids of every edge actually removed, so a caller can scope
+    a follow-up isolated-node prune to exactly the nodes this call might have orphaned.
     """
     norm = normalize_relationship_type(relationship_type)
     if norm not in _SINGLE_SLOT_OUTGOING_REL_TYPES:
-        return
+        return set()
     stmt = select(AgentMemoryEdge).where(
         AgentMemoryEdge.workflow_id == workflow_id,
         AgentMemoryEdge.canvas_node_id == canvas_node_id,
         AgentMemoryEdge.source_node_id == source_node_id,
     )
     rows = list(session.execute(stmt).scalars().all())
+    affected_node_ids: set[uuid.UUID] = set()
     for edge in rows:
         if normalize_relationship_type(edge.relationship_type) != norm:
             continue
         if edge.target_node_id != keep_target_node_id:
+            affected_node_ids.add(edge.source_node_id)
+            affected_node_ids.add(edge.target_node_id)
             session.delete(edge)
+    return affected_node_ids
 
 
 def delete_agent_memory_nodes_by_entity_names_sync(
@@ -146,13 +152,19 @@ def prune_isolated_nodes_sync(
     workflow_id: uuid.UUID,
     canvas_node_id: str,
     *,
-    exempt_entity_names_lower: frozenset[str] | None = None,
+    candidate_node_ids: frozenset[uuid.UUID],
 ) -> None:
-    """Remove nodes with no incident edges (floating entities).
+    """Remove nodes with no incident edges, scoped strictly to candidate_node_ids.
 
-    exempt_entity_names_lower: entity names (lowercase) from the current extraction batch that
-    may legitimately have no edges yet; they are kept until a later merge.
+    candidate_node_ids must be exactly the nodes actually involved in whatever edit just
+    happened (an edge's endpoints, or the nodes a merge's edge-replacement touched) - never
+    "every isolated node in the graph". A node outside this set is never touched, no matter
+    how long it has had zero edges, since a standalone node the user placed deliberately (or
+    one left over from an earlier extraction) looks identical to one that just became
+    isolated as a side effect of this specific edit, and only the latter should be swept.
     """
+    if not candidate_node_ids:
+        return
     edges = list(
         session.execute(
             select(AgentMemoryEdge).where(
@@ -170,6 +182,7 @@ def prune_isolated_nodes_sync(
     nodes = list(
         session.execute(
             select(AgentMemoryNode).where(
+                AgentMemoryNode.id.in_(candidate_node_ids),
                 AgentMemoryNode.workflow_id == workflow_id,
                 AgentMemoryNode.canvas_node_id == canvas_node_id,
             )
@@ -177,11 +190,8 @@ def prune_isolated_nodes_sync(
         .scalars()
         .all()
     )
-    skip_names = exempt_entity_names_lower or frozenset()
     for n in nodes:
         if n.id in touched:
-            continue
-        if n.entity_name.strip().lower() in skip_names:
             continue
         session.delete(n)
 
@@ -617,14 +627,13 @@ def apply_parsed_extraction_sync(
         )
     session.flush()
 
-    entity_names_lower: set[str] = set()
+    edge_replacement_candidates: set[uuid.UUID] = set()
     for raw in entities:
         if not isinstance(raw, dict):
             continue
         name = str(raw.get("name") or "").strip()
         if not name:
             continue
-        entity_names_lower.add(name.lower())
         ent_type = str(raw.get("type") or "other").strip()[:50] or "other"
         props = raw.get("properties") if isinstance(raw.get("properties"), dict) else {}
         try:
@@ -704,7 +713,7 @@ def apply_parsed_extraction_sync(
                     confidence=conf,
                 )
             )
-        remove_conflicting_outgoing_edges_sync(
+        edge_replacement_candidates |= remove_conflicting_outgoing_edges_sync(
             session,
             workflow_id,
             canvas_key,
@@ -714,11 +723,15 @@ def apply_parsed_extraction_sync(
         )
 
     session.flush()
+    # Scoped to only the nodes a same-slot edge replacement actually touched above (e.g. the
+    # old employer an updated "works for" edge replaced), never to every isolated node in the
+    # graph - a brand-new entity with no edges yet, or an unrelated standalone node the user
+    # placed manually, must survive this merge untouched either way.
     prune_isolated_nodes_sync(
         session,
         workflow_id,
         canvas_key,
-        exempt_entity_names_lower=frozenset(entity_names_lower),
+        candidate_node_ids=frozenset(edge_replacement_candidates),
     )
 
 

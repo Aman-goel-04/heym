@@ -5,14 +5,16 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 from sqlalchemy.dialects import postgresql
 
-from app.db.models import AgentMemoryNode
+from app.db.models import AgentMemoryEdge, AgentMemoryNode, User, Workflow
+from app.db.session import SessionLocal
 from app.services import agent_memory_service as agent_memory_service_mod
 from app.services.agent_memory_service import (
     _is_unsupported_json_object_response_format,
     _trace_context_for_memory_job,
+    apply_parsed_extraction_sync,
     augment_system_instruction_with_memory,
     entity_name_equals_ci,
     format_conversation_for_memory,
@@ -21,8 +23,19 @@ from app.services.agent_memory_service import (
     merge_memory_share_targets,
     normalize_relationship_type,
     parse_llm_json_block,
+    prune_isolated_nodes_sync,
+    remove_conflicting_outgoing_edges_sync,
 )
 from app.services.llm_trace import LLMTraceContext
+
+
+def _is_db_reachable() -> bool:
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
 
 
 class UnsupportedJsonObjectResponseFormatTests(unittest.TestCase):
@@ -336,6 +349,229 @@ class AugmentSystemInstructionTests(unittest.TestCase):
         self.assertIn("base", out)
         self.assertIn("Shared agent memory", out)
         self.assertIn("Shared (topic)", out)
+
+
+class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
+    """Issue #658: isolated-node pruning must be scoped to candidate node ids,
+    never to every zero-edge node under the canvas node.
+    """
+
+    def setUp(self) -> None:
+        if not _is_db_reachable():
+            self.skipTest("PostgreSQL database is not reachable")
+
+        self.user_id = uuid.uuid4()
+        self.workflow_id = uuid.uuid4()
+        self.canvas_node_id = "agent-1"
+
+        with SessionLocal() as db:
+            db.add(
+                User(
+                    id=self.user_id,
+                    email=f"prune-test-{self.user_id}@example.com",
+                    hashed_password="hashed_pw",
+                    name="Prune Tester",
+                )
+            )
+            db.flush()
+            db.add(
+                Workflow(
+                    id=self.workflow_id,
+                    name="Prune test workflow",
+                    owner_id=self.user_id,
+                )
+            )
+            db.commit()
+
+    def tearDown(self) -> None:
+        if not _is_db_reachable():
+            return
+        with SessionLocal() as db:
+            db.execute(delete(Workflow).where(Workflow.id == self.workflow_id))
+            db.commit()
+
+    def _add_node(self, db, name: str, entity_type: str = "person") -> AgentMemoryNode:
+        node = AgentMemoryNode(
+            id=uuid.uuid4(),
+            workflow_id=self.workflow_id,
+            canvas_node_id=self.canvas_node_id,
+            entity_name=name,
+            entity_type=entity_type,
+            properties={},
+            confidence=1.0,
+        )
+        db.add(node)
+        db.flush()
+        return node
+
+    def _add_edge(
+        self, db, source: AgentMemoryNode, target: AgentMemoryNode, relationship_type: str
+    ) -> AgentMemoryEdge:
+        edge = AgentMemoryEdge(
+            id=uuid.uuid4(),
+            workflow_id=self.workflow_id,
+            canvas_node_id=self.canvas_node_id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            relationship_type=relationship_type,
+            properties={},
+            confidence=1.0,
+        )
+        db.add(edge)
+        db.flush()
+        return edge
+
+    def test_isolated_node_outside_candidate_scope_survives(self) -> None:
+        # Carol has no edges at all, but editing an unrelated Alice/Bob edge must
+        # never sweep her - she is outside the candidate scope entirely. This is
+        # the exact regression from #658 (editing one edge silently deleted an
+        # unrelated isolated node).
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            bob = self._add_node(db, "Bob")
+            carol = self._add_node(db, "Carol")
+            self._add_edge(db, alice, bob, "knows")
+            db.commit()
+
+            prune_isolated_nodes_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                candidate_node_ids=frozenset({alice.id, bob.id}),
+            )
+            db.commit()
+
+            remaining = {
+                n.id
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+        self.assertIn(alice.id, remaining)
+        self.assertIn(bob.id, remaining)
+        self.assertIn(carol.id, remaining)
+
+    def test_isolated_node_inside_candidate_scope_is_removed(self) -> None:
+        with SessionLocal() as db:
+            dave = self._add_node(db, "Dave")
+            db.commit()
+
+            prune_isolated_nodes_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                candidate_node_ids=frozenset({dave.id}),
+            )
+            db.commit()
+
+            remaining = {
+                n.id
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+        self.assertNotIn(dave.id, remaining)
+
+    def test_deleting_the_only_edge_removes_both_now_isolated_endpoints(self) -> None:
+        # Matches the delete_memory_edge endpoint's behavior: deleting an edge
+        # scopes the follow-up prune to exactly that edge's two endpoints, so if
+        # either one is left with no other edges it is removed too.
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            bob = self._add_node(db, "Bob")
+            edge = self._add_edge(db, alice, bob, "knows")
+            db.commit()
+
+            endpoint_ids = frozenset({edge.source_node_id, edge.target_node_id})
+            db.execute(delete(AgentMemoryEdge).where(AgentMemoryEdge.id == edge.id))
+            db.flush()
+            prune_isolated_nodes_sync(
+                db, self.workflow_id, self.canvas_node_id, candidate_node_ids=endpoint_ids
+            )
+            db.commit()
+
+            remaining = {
+                n.id
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+        self.assertNotIn(alice.id, remaining)
+        self.assertNotIn(bob.id, remaining)
+
+    def test_remove_conflicting_outgoing_edges_returns_only_affected_node_ids(self) -> None:
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            old_co = self._add_node(db, "OldCo", entity_type="organization")
+            new_co = self._add_node(db, "NewCo", entity_type="organization")
+            self._add_edge(db, alice, old_co, "works for")
+            db.commit()
+
+            affected = remove_conflicting_outgoing_edges_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                alice.id,
+                "works for",
+                new_co.id,
+            )
+            db.commit()
+
+        self.assertEqual(affected, {alice.id, old_co.id})
+        self.assertNotIn(new_co.id, affected)
+
+    def test_extraction_merge_prunes_only_the_replaced_employer_not_a_manual_node(self) -> None:
+        # mbakgun's point 3 + the "works for" replacement case: a new "works for"
+        # edge from the LLM extraction replaces the old employer link, which
+        # should sweep the now-isolated old employer - but a manually added
+        # standalone node (Carol) must survive the same merge untouched.
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            old_co = self._add_node(db, "OldCo", entity_type="organization")
+            self._add_edge(db, alice, old_co, "works for")
+            self._add_node(db, "Carol")
+            db.commit()
+
+            apply_parsed_extraction_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                {
+                    "entities": [
+                        {"name": "Alice", "type": "person", "confidence": 1.0},
+                        {"name": "NewCo", "type": "organization", "confidence": 1.0},
+                    ],
+                    "relationships": [
+                        {
+                            "source": "Alice",
+                            "target": "NewCo",
+                            "type": "works for",
+                            "confidence": 1.0,
+                        }
+                    ],
+                },
+            )
+            db.commit()
+
+            remaining_nodes = {
+                n.entity_name: n
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+
+        self.assertNotIn("OldCo", remaining_nodes)
+        self.assertIn("Alice", remaining_nodes)
+        self.assertIn("NewCo", remaining_nodes)
+        self.assertIn("Carol", remaining_nodes)
 
 
 if __name__ == "__main__":

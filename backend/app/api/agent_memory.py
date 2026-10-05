@@ -242,7 +242,7 @@ async def add_memory_edge(
     canvas_key = node_id[:128]
 
     def _after_edge_write(sync_sess: Session) -> None:
-        remove_conflicting_outgoing_edges_sync(
+        replaced_edge_nodes = remove_conflicting_outgoing_edges_sync(
             sync_sess,
             workflow_id,
             canvas_key,
@@ -250,7 +250,12 @@ async def add_memory_edge(
             row.relationship_type,
             tgt.id,
         )
-        prune_isolated_nodes_sync(sync_sess, workflow_id, canvas_key)
+        prune_isolated_nodes_sync(
+            sync_sess,
+            workflow_id,
+            canvas_key,
+            candidate_node_ids=frozenset({src.id, tgt.id}) | replaced_edge_nodes,
+        )
 
     await db.run_sync(_after_edge_write)
     await db.refresh(row)
@@ -292,7 +297,7 @@ async def update_memory_edge(
     await db.flush()
 
     def _after_edge_update(sync_sess: Session) -> None:
-        remove_conflicting_outgoing_edges_sync(
+        replaced_edge_nodes = remove_conflicting_outgoing_edges_sync(
             sync_sess,
             workflow_id,
             row.canvas_node_id,
@@ -300,7 +305,13 @@ async def update_memory_edge(
             row.relationship_type,
             row.target_node_id,
         )
-        prune_isolated_nodes_sync(sync_sess, workflow_id, row.canvas_node_id)
+        prune_isolated_nodes_sync(
+            sync_sess,
+            workflow_id,
+            row.canvas_node_id,
+            candidate_node_ids=frozenset({row.source_node_id, row.target_node_id})
+            | replaced_edge_nodes,
+        )
 
     await db.run_sync(_after_edge_update)
     await db.refresh(row)
@@ -331,11 +342,17 @@ async def delete_memory_edge(
 
     canvas_key = row.canvas_node_id
     wf_id = row.workflow_id
+    endpoint_ids = frozenset({row.source_node_id, row.target_node_id})
     await db.execute(delete(AgentMemoryEdge).where(AgentMemoryEdge.id == memory_edge_id))
     await db.flush()
 
     def _after_edge_delete(sync_sess: Session) -> None:
-        prune_isolated_nodes_sync(sync_sess, wf_id, canvas_key)
+        # Scoped to exactly this edge's two endpoints: if removing it leaves either one
+        # with no other edges, both are deleted here (deliberately - a node that reads as
+        # a bare floating entity once its one connection is gone is swept the same as any
+        # other orphan). A caller relying on Undo re-creating just the edge needs to also
+        # re-create any endpoint this removed; it cannot assume the node survives.
+        prune_isolated_nodes_sync(sync_sess, wf_id, canvas_key, candidate_node_ids=endpoint_ids)
 
     await db.run_sync(_after_edge_delete)
     return {"status": "deleted"}
