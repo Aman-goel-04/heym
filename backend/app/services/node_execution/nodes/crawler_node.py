@@ -1,7 +1,47 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from app.services import ssrf_guard
 from app.services.node_execution.base import NodeExecutionContext
+
+if TYPE_CHECKING:
+    from bs4 import Tag
+
+
+def _extract_element(element: Tag, attributes: list[str]) -> dict[str, Any]:
+    raw_text = element.get_text(separator="\n", strip=True)
+    result_item: dict[str, Any] = {"text": raw_text}
+    for attr in attributes:
+        attr_value = element.get(attr)
+        if attr_value is not None:
+            result_item[attr] = attr_value
+    return result_item
+
+
+def _extract_selectors(
+    html_content: str, selectors: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    if not selectors:
+        return {}
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    extracted: dict[str, list[dict[str, Any]]] = {}
+
+    for selector_config in selectors:
+        selector_name = selector_config.get("name", "")
+        css_selector = selector_config.get("selector", "")
+        if not selector_name or not css_selector:
+            continue
+
+        attributes = selector_config.get("attributes", [])
+        extracted[selector_name] = [
+            _extract_element(element, attributes) for element in soup.select(css_selector)
+        ]
+
+    return extracted
 
 
 def execute(ctx: NodeExecutionContext) -> object:
@@ -36,7 +76,7 @@ def execute(ctx: NodeExecutionContext) -> object:
     wait_seconds = node_data.get("crawlerWaitSeconds", 0)
     max_timeout = node_data.get("crawlerMaxTimeout", 60000)
 
-    request_body: dict = {
+    request_body: dict[str, Any] = {
         "cmd": "request.get",
         "url": target_url,
         "maxTimeout": max_timeout,
@@ -66,48 +106,17 @@ def execute(ctx: NodeExecutionContext) -> object:
     html_content = solution.get("response", "")
 
     crawler_mode = node_data.get("crawlerMode", "basic")
-
     if crawler_mode == "extract":
-        from bs4 import BeautifulSoup
-
         selectors = node_data.get("crawlerSelectors", [])
-        extracted: dict = {}
-
-        if selectors:
-            soup = BeautifulSoup(html_content, "html.parser")
-
-            for selector_config in selectors:
-                selector_name = selector_config.get("name", "")
-                css_selector = selector_config.get("selector", "")
-                attributes = selector_config.get("attributes", [])
-
-                if not selector_name or not css_selector:
-                    continue
-
-                elements = soup.select(css_selector)
-                selector_results = []
-
-                for element in elements:
-                    raw_text = element.get_text(separator="\n", strip=True)
-                    result_item: dict = {"text": raw_text}
-                    for attr in attributes:
-                        attr_value = element.get(attr)
-                        if attr_value is not None:
-                            result_item[attr] = attr_value
-                    selector_results.append(result_item)
-
-                extracted[selector_name] = selector_results
-
-        output = {
+        return {
             "html": html_content,
-            "extracted": extracted,
+            "extracted": _extract_selectors(html_content, selectors),
             "url": target_url,
             "status": solution.get("status", ""),
         }
-    else:
-        output = {
-            "html": html_content,
-            "url": target_url,
-            "status": solution.get("status", ""),
-        }
-    return output
+
+    return {
+        "html": html_content,
+        "url": target_url,
+        "status": solution.get("status", ""),
+    }
