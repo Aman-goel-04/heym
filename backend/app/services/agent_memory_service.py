@@ -631,9 +631,7 @@ def apply_parsed_extraction_sync(
                 revoked_ids.add(node.id)
         if revoked_ids:
             # A revoked node's edges cascade-delete with it, which can leave a
-            # neighbor (e.g. a former employer) with no remaining edges. That
-            # neighbor is never itself in revoked_ids, so collect it here before
-            # the delete, or it stays floating instead of getting pruned below.
+            # neighbor with no edges - collect it here before the delete.
             neighbor_edges = (
                 session.execute(
                     select(AgentMemoryEdge).where(
@@ -659,8 +657,7 @@ def apply_parsed_extraction_sync(
     session.flush()
 
     # Nodes created or updated from this batch's own `entities` survive the
-    # prune below even if they end up with no edges - they're data the LLM
-    # just wrote this run, not a leftover the merge happened to orphan.
+    # prune below even if they end up with no edges.
     entity_batch_ids: set[uuid.UUID] = set()
     for raw in entities:
         if not isinstance(raw, dict):
@@ -760,11 +757,8 @@ def apply_parsed_extraction_sync(
         )
 
     session.flush()
-    # Scoped to only the nodes a same-slot edge replacement (or a revoke's cascade)
-    # actually touched above, minus anything this same batch's `entities` created or
-    # updated - never to every isolated node in the graph. A brand-new entity with no
-    # edges yet, data this run just wrote to an existing node, or an unrelated
-    # standalone node the user placed manually, must survive this merge untouched.
+    # Scoped to only the nodes touched by an edge replacement or revoke cascade
+    # above, minus anything this batch's `entities` created or updated.
     prune_isolated_nodes_sync(
         session,
         workflow_id,

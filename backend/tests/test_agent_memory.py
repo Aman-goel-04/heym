@@ -352,8 +352,8 @@ class AugmentSystemInstructionTests(unittest.TestCase):
 
 
 class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
-    """Issue #658: isolated-node pruning must be scoped to candidate node ids,
-    never to every zero-edge node under the canvas node.
+    """Isolated-node pruning must be scoped to candidate node ids, never to
+    every zero-edge node under the canvas node.
     """
 
     def setUp(self) -> None:
@@ -422,10 +422,8 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
         return edge
 
     def test_isolated_node_outside_candidate_scope_survives(self) -> None:
-        # Carol has no edges at all, but editing an unrelated Alice/Bob edge must
-        # never sweep her - she is outside the candidate scope entirely. This is
-        # the exact regression from #658 (editing one edge silently deleted an
-        # unrelated isolated node).
+        # Carol has no edges at all, but editing an unrelated Alice/Bob edge
+        # must never sweep her - she is outside the candidate scope entirely.
         with SessionLocal() as db:
             alice = self._add_node(db, "Alice")
             bob = self._add_node(db, "Bob")
@@ -498,10 +496,8 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
         self.assertNotIn(new_co.id, affected)
 
     def test_extraction_merge_prunes_only_the_replaced_employer_not_a_manual_node(self) -> None:
-        # mbakgun's point 3 + the "works for" replacement case: a new "works for"
-        # edge from the LLM extraction replaces the old employer link, which
-        # should sweep the now-isolated old employer - but a manually added
-        # standalone node (Carol) must survive the same merge untouched.
+        # A new "works for" edge replaces the old employer link, sweeping the
+        # now-isolated OldCo - but a manually added node (Carol) must survive.
         with SessionLocal() as db:
             alice = self._add_node(db, "Alice")
             old_co = self._add_node(db, "OldCo", entity_type="organization")
@@ -547,12 +543,8 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
     def test_extraction_merge_keeps_a_node_that_lost_its_edge_when_it_is_also_in_entities(
         self,
     ) -> None:
-        # mbakgun's follow-up on #674: the old name-based exemption also kept
-        # entities that appear in the current extraction batch, by ID now. Acme
-        # loses its "works for" edge (Alice now works for Beta instead) and would
-        # otherwise be a prune candidate, but this same batch's `entities` list
-        # also updates Acme's own data (a new city) - so it must survive, not be
-        # deleted together with the data the LLM just wrote for it.
+        # Acme loses its "works for" edge and would otherwise be pruned, but
+        # this batch's entities also updates Acme's own data - it must survive.
         with SessionLocal() as db:
             alice = self._add_node(db, "Alice")
             acme = self._add_node(db, "Acme", entity_type="organization")
@@ -603,9 +595,8 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
     def test_extraction_merge_still_prunes_a_node_that_lost_its_edge_when_not_in_entities(
         self,
     ) -> None:
-        # Same scenario as above, minus Acme from `entities` this time - nothing
-        # in this batch touches Acme's own data, so once it loses its only edge
-        # it should be pruned same as before this follow-up fix.
+        # Same scenario as above, minus Acme from `entities` this time - once
+        # it loses its only edge it should be pruned.
         with SessionLocal() as db:
             alice = self._add_node(db, "Alice")
             acme = self._add_node(db, "Acme", entity_type="organization")
@@ -646,11 +637,8 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
         self.assertIn("Beta", remaining_names)
 
     def test_revoking_an_entity_prunes_a_neighbor_left_with_no_edges(self) -> None:
-        # ckakgun's review on #674: revoked_entities deletes a node and cascades
-        # its edges, which can leave a neighbor (e.g. a former employer) with no
-        # edges of its own. That neighbor is never itself in revoked_ids, so it
-        # must be collected as a candidate before the revoke delete runs, or it
-        # stays floating where main used to prune it unconditionally.
+        # revoked_entities deletes a node and cascades its edges, which can
+        # leave a neighbor (e.g. a former employer) with no edges of its own.
         with SessionLocal() as db:
             alice = self._add_node(db, "Alice")
             old_co = self._add_node(db, "OldCo", entity_type="organization")
@@ -683,9 +671,8 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
 class DeleteMemoryEdgeEndpointPostgreSqlTests(unittest.IsolatedAsyncioTestCase):
     """Real-DB coverage for the delete_memory_edge endpoint itself.
 
-    ckakgun's review on #674: deleting the only edge between two nodes must not
-    also prune the now-isolated endpoints, since Undo re-creates the edge by
-    looking up its endpoints by entity name and gets a 400 if either is gone.
+    Deleting the only edge between two nodes must not also prune the now-
+    isolated endpoints, since Undo re-creates the edge by entity name.
     """
 
     async def asyncSetUp(self) -> None:
