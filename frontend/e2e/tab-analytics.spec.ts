@@ -11,7 +11,11 @@ test("renders the analytics dashboard with KPI cards", async ({ page }) => {
   const main = page.getByRole("main");
   await expect(main.getByRole("heading", { name: "Analytics Dashboard" })).toBeVisible();
   await expect(main.getByText("Total Executions")).toBeVisible();
-  await expect(main.getByText("Time Saved")).toBeVisible();
+  // Scoped to the KPI cards container: "Time Saved" is also a "Most Used
+  // Workflows" table column header once that table has rows, which made this
+  // locator ambiguous (strict-mode violation) depending on test run order.
+  const kpiCards = page.getByTestId("analytics-kpi-cards");
+  await expect(kpiCards.getByText("Time Saved")).toBeVisible();
   await expect(main.getByText("Chart selection is ready")).toBeVisible();
 });
 

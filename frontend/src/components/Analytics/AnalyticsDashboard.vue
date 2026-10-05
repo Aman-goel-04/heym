@@ -758,7 +758,10 @@ function goToWorkflow(): void {
       v-else-if="stats"
       class="space-y-6"
     >
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <div
+        data-testid="analytics-kpi-cards"
+        class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
+      >
         <Card class="p-4">
           <div class="flex items-center justify-between">
             <div>
