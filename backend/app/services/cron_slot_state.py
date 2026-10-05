@@ -72,13 +72,24 @@ async def cleanup_cron_slot_claims(
     return result.rowcount or 0
 
 
+def iso_week_slot(moment: datetime) -> str:
+    """Cleanup slot key for a weekly job: ISO year and week, e.g. ``2026-W40``.
+
+    Eight characters, so it fits ``cron_cleanup_claims.slot_date`` beside the
+    daily ``YYYYMMDD`` keys. A weekly claim outlives its week before the
+    retention cleanup removes it, so the same key can never be claimed twice.
+    """
+    iso_year, iso_week, _ = moment.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
 async def claim_cleanup_slot(
     *,
     job_name: str,
     slot_date: str,
     worker_id: str | None = None,
 ) -> bool:
-    """Claim one daily cleanup slot for this worker.
+    """Claim one cleanup slot (a daily date or an ISO week) for this worker.
 
     Returns True only for the worker that inserted the row; everyone else - a
     concurrent worker, or the same worker after a leader handoff - gets False
