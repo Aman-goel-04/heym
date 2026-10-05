@@ -544,6 +544,107 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
         self.assertIn("NewCo", remaining_nodes)
         self.assertIn("Carol", remaining_nodes)
 
+    def test_extraction_merge_keeps_a_node_that_lost_its_edge_when_it_is_also_in_entities(
+        self,
+    ) -> None:
+        # mbakgun's follow-up on #674: the old name-based exemption also kept
+        # entities that appear in the current extraction batch, by ID now. Acme
+        # loses its "works for" edge (Alice now works for Beta instead) and would
+        # otherwise be a prune candidate, but this same batch's `entities` list
+        # also updates Acme's own data (a new city) - so it must survive, not be
+        # deleted together with the data the LLM just wrote for it.
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            acme = self._add_node(db, "Acme", entity_type="organization")
+            self._add_edge(db, alice, acme, "works for")
+            db.commit()
+
+            apply_parsed_extraction_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                {
+                    "entities": [
+                        {"name": "Alice", "type": "person", "confidence": 1.0},
+                        {"name": "Beta", "type": "organization", "confidence": 1.0},
+                        {
+                            "name": "Acme",
+                            "type": "organization",
+                            "properties": {"city": "Berlin"},
+                            "confidence": 1.0,
+                        },
+                    ],
+                    "relationships": [
+                        {
+                            "source": "Alice",
+                            "target": "Beta",
+                            "type": "works for",
+                            "confidence": 1.0,
+                        }
+                    ],
+                },
+            )
+            db.commit()
+
+            remaining = {
+                n.entity_name: n
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+
+        self.assertIn("Acme", remaining)
+        self.assertEqual(remaining["Acme"].properties.get("city"), "Berlin")
+        self.assertIn("Beta", remaining)
+        self.assertEqual(acme.id, remaining["Acme"].id)
+
+    def test_extraction_merge_still_prunes_a_node_that_lost_its_edge_when_not_in_entities(
+        self,
+    ) -> None:
+        # Same scenario as above, minus Acme from `entities` this time - nothing
+        # in this batch touches Acme's own data, so once it loses its only edge
+        # it should be pruned same as before this follow-up fix.
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            acme = self._add_node(db, "Acme", entity_type="organization")
+            self._add_edge(db, alice, acme, "works for")
+            db.commit()
+
+            apply_parsed_extraction_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                {
+                    "entities": [
+                        {"name": "Alice", "type": "person", "confidence": 1.0},
+                        {"name": "Beta", "type": "organization", "confidence": 1.0},
+                    ],
+                    "relationships": [
+                        {
+                            "source": "Alice",
+                            "target": "Beta",
+                            "type": "works for",
+                            "confidence": 1.0,
+                        }
+                    ],
+                },
+            )
+            db.commit()
+
+            remaining_names = {
+                n.entity_name
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+
+        self.assertNotIn("Acme", remaining_names)
+        self.assertIn("Beta", remaining_names)
+
     def test_revoking_an_entity_prunes_a_neighbor_left_with_no_edges(self) -> None:
         # ckakgun's review on #674: revoked_entities deletes a node and cascades
         # its edges, which can leave a neighbor (e.g. a former employer) with no

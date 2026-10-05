@@ -658,6 +658,10 @@ def apply_parsed_extraction_sync(
         )
     session.flush()
 
+    # Nodes created or updated from this batch's own `entities` survive the
+    # prune below even if they end up with no edges - they're data the LLM
+    # just wrote this run, not a leftover the merge happened to orphan.
+    entity_batch_ids: set[uuid.UUID] = set()
     for raw in entities:
         if not isinstance(raw, dict):
             continue
@@ -687,10 +691,13 @@ def apply_parsed_extraction_sync(
             )
             target_existing.properties = {**prior, **props}
             target_existing.confidence = conf
+            entity_batch_ids.add(target_existing.id)
         else:
+            new_id = uuid.uuid4()
+            entity_batch_ids.add(new_id)
             session.add(
                 AgentMemoryNode(
-                    id=uuid.uuid4(),
+                    id=new_id,
                     workflow_id=workflow_id,
                     canvas_node_id=canvas_key,
                     entity_name=name[:255],
@@ -753,15 +760,16 @@ def apply_parsed_extraction_sync(
         )
 
     session.flush()
-    # Scoped to only the nodes a same-slot edge replacement actually touched above (e.g. the
-    # old employer an updated "works for" edge replaced), never to every isolated node in the
-    # graph - a brand-new entity with no edges yet, or an unrelated standalone node the user
-    # placed manually, must survive this merge untouched either way.
+    # Scoped to only the nodes a same-slot edge replacement (or a revoke's cascade)
+    # actually touched above, minus anything this same batch's `entities` created or
+    # updated - never to every isolated node in the graph. A brand-new entity with no
+    # edges yet, data this run just wrote to an existing node, or an unrelated
+    # standalone node the user placed manually, must survive this merge untouched.
     prune_isolated_nodes_sync(
         session,
         workflow_id,
         canvas_key,
-        candidate_node_ids=frozenset(edge_replacement_candidates),
+        candidate_node_ids=frozenset(edge_replacement_candidates - entity_batch_ids),
     )
 
 
