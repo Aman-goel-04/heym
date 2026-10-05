@@ -15,7 +15,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import AgentMemoryEdge, AgentMemoryNode, Credential, Workflow
@@ -620,14 +620,44 @@ def apply_parsed_extraction_sync(
         entities = []
     if not isinstance(relationships, list):
         relationships = []
+
+    edge_replacement_candidates: set[uuid.UUID] = set()
     if isinstance(revoked, list):
         revoke_names = [str(x).strip() for x in revoked if str(x).strip()]
+        revoked_ids: set[uuid.UUID] = set()
+        for nm in revoke_names:
+            node = _find_node_by_name_sync(session, workflow_id, canvas_key, nm)
+            if node is not None:
+                revoked_ids.add(node.id)
+        if revoked_ids:
+            # A revoked node's edges cascade-delete with it, which can leave a
+            # neighbor (e.g. a former employer) with no remaining edges. That
+            # neighbor is never itself in revoked_ids, so collect it here before
+            # the delete, or it stays floating instead of getting pruned below.
+            neighbor_edges = (
+                session.execute(
+                    select(AgentMemoryEdge).where(
+                        AgentMemoryEdge.workflow_id == workflow_id,
+                        AgentMemoryEdge.canvas_node_id == canvas_key,
+                        or_(
+                            AgentMemoryEdge.source_node_id.in_(revoked_ids),
+                            AgentMemoryEdge.target_node_id.in_(revoked_ids),
+                        ),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for e in neighbor_edges:
+                if e.source_node_id not in revoked_ids:
+                    edge_replacement_candidates.add(e.source_node_id)
+                if e.target_node_id not in revoked_ids:
+                    edge_replacement_candidates.add(e.target_node_id)
         delete_agent_memory_nodes_by_entity_names_sync(
             session, workflow_id, canvas_key, revoke_names
         )
     session.flush()
 
-    edge_replacement_candidates: set[uuid.UUID] = set()
     for raw in entities:
         if not isinstance(raw, dict):
             continue

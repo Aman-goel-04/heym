@@ -476,35 +476,6 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
             }
         self.assertNotIn(dave.id, remaining)
 
-    def test_deleting_the_only_edge_removes_both_now_isolated_endpoints(self) -> None:
-        # Matches the delete_memory_edge endpoint's behavior: deleting an edge
-        # scopes the follow-up prune to exactly that edge's two endpoints, so if
-        # either one is left with no other edges it is removed too.
-        with SessionLocal() as db:
-            alice = self._add_node(db, "Alice")
-            bob = self._add_node(db, "Bob")
-            edge = self._add_edge(db, alice, bob, "knows")
-            db.commit()
-
-            endpoint_ids = frozenset({edge.source_node_id, edge.target_node_id})
-            db.execute(delete(AgentMemoryEdge).where(AgentMemoryEdge.id == edge.id))
-            db.flush()
-            prune_isolated_nodes_sync(
-                db, self.workflow_id, self.canvas_node_id, candidate_node_ids=endpoint_ids
-            )
-            db.commit()
-
-            remaining = {
-                n.id
-                for n in db.execute(
-                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
-                )
-                .scalars()
-                .all()
-            }
-        self.assertNotIn(alice.id, remaining)
-        self.assertNotIn(bob.id, remaining)
-
     def test_remove_conflicting_outgoing_edges_returns_only_affected_node_ids(self) -> None:
         with SessionLocal() as db:
             alice = self._add_node(db, "Alice")
@@ -572,6 +543,175 @@ class MemoryPruneScopingPostgreSqlTests(unittest.TestCase):
         self.assertIn("Alice", remaining_nodes)
         self.assertIn("NewCo", remaining_nodes)
         self.assertIn("Carol", remaining_nodes)
+
+    def test_revoking_an_entity_prunes_a_neighbor_left_with_no_edges(self) -> None:
+        # ckakgun's review on #674: revoked_entities deletes a node and cascades
+        # its edges, which can leave a neighbor (e.g. a former employer) with no
+        # edges of its own. That neighbor is never itself in revoked_ids, so it
+        # must be collected as a candidate before the revoke delete runs, or it
+        # stays floating where main used to prune it unconditionally.
+        with SessionLocal() as db:
+            alice = self._add_node(db, "Alice")
+            old_co = self._add_node(db, "OldCo", entity_type="organization")
+            self._add_edge(db, alice, old_co, "works for")
+            self._add_node(db, "Carol")
+            db.commit()
+
+            apply_parsed_extraction_sync(
+                db,
+                self.workflow_id,
+                self.canvas_node_id,
+                {"revoked_entities": ["Alice"], "entities": [], "relationships": []},
+            )
+            db.commit()
+
+            remaining_names = {
+                n.entity_name
+                for n in db.execute(
+                    select(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+                )
+                .scalars()
+                .all()
+            }
+
+        self.assertNotIn("Alice", remaining_names)
+        self.assertNotIn("OldCo", remaining_names)
+        self.assertIn("Carol", remaining_names)
+
+
+class DeleteMemoryEdgeEndpointPostgreSqlTests(unittest.IsolatedAsyncioTestCase):
+    """Real-DB coverage for the delete_memory_edge endpoint itself.
+
+    ckakgun's review on #674: deleting the only edge between two nodes must not
+    also prune the now-isolated endpoints, since Undo re-creates the edge by
+    looking up its endpoints by entity name and gets a 400 if either is gone.
+    """
+
+    async def asyncSetUp(self) -> None:
+        if not _is_db_reachable():
+            self.skipTest("PostgreSQL database is not reachable")
+        from app.db.session import async_session_maker
+
+        self.async_session_maker = async_session_maker
+        self.user_id = uuid.uuid4()
+        self.workflow_id = uuid.uuid4()
+        self.canvas_node_id = "agent-1"
+        self.alice_id = uuid.uuid4()
+        self.bob_id = uuid.uuid4()
+        self.edge_id = uuid.uuid4()
+
+        async with async_session_maker() as db:
+            db.add(
+                User(
+                    id=self.user_id,
+                    email=f"delete-edge-{self.user_id}@example.com",
+                    hashed_password="hashed_pw",
+                    name="Delete Edge Tester",
+                )
+            )
+            await db.flush()
+            db.add(
+                Workflow(
+                    id=self.workflow_id,
+                    owner_id=self.user_id,
+                    name="Delete Edge Test Workflow",
+                    nodes=[],
+                    edges=[],
+                )
+            )
+            await db.flush()
+            db.add(
+                AgentMemoryNode(
+                    id=self.alice_id,
+                    workflow_id=self.workflow_id,
+                    canvas_node_id=self.canvas_node_id,
+                    entity_name="Alice",
+                    entity_type="person",
+                    properties={},
+                    confidence=1.0,
+                )
+            )
+            db.add(
+                AgentMemoryNode(
+                    id=self.bob_id,
+                    workflow_id=self.workflow_id,
+                    canvas_node_id=self.canvas_node_id,
+                    entity_name="Bob",
+                    entity_type="person",
+                    properties={},
+                    confidence=1.0,
+                )
+            )
+            await db.flush()
+            db.add(
+                AgentMemoryEdge(
+                    id=self.edge_id,
+                    workflow_id=self.workflow_id,
+                    canvas_node_id=self.canvas_node_id,
+                    source_node_id=self.alice_id,
+                    target_node_id=self.bob_id,
+                    relationship_type="knows",
+                    properties={},
+                    confidence=1.0,
+                )
+            )
+            await db.commit()
+
+    async def asyncTearDown(self) -> None:
+        if not _is_db_reachable():
+            return
+        from app.db.session import engine
+
+        async with self.async_session_maker() as db:
+            await db.execute(
+                delete(AgentMemoryEdge).where(AgentMemoryEdge.workflow_id == self.workflow_id)
+            )
+            await db.execute(
+                delete(AgentMemoryNode).where(AgentMemoryNode.workflow_id == self.workflow_id)
+            )
+            await db.execute(delete(Workflow).where(Workflow.id == self.workflow_id))
+            await db.execute(delete(User).where(User.id == self.user_id))
+            await db.commit()
+        await engine.dispose()
+
+    async def test_deleting_the_only_edge_leaves_both_endpoints_intact(self) -> None:
+        from app.api.agent_memory import delete_memory_edge
+
+        async with self.async_session_maker() as db:
+            user = await db.get(User, self.user_id)
+            result = await delete_memory_edge(self.workflow_id, self.edge_id, db, user)
+            await db.commit()
+
+        self.assertEqual(result, {"status": "deleted"})
+
+        async with self.async_session_maker() as db:
+            remaining_edges = (
+                (
+                    await db.execute(
+                        select(AgentMemoryEdge).where(
+                            AgentMemoryEdge.workflow_id == self.workflow_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            remaining_nodes = {
+                n.id
+                for n in (
+                    await db.execute(
+                        select(AgentMemoryNode).where(
+                            AgentMemoryNode.workflow_id == self.workflow_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            }
+
+        self.assertEqual(remaining_edges, [])
+        self.assertIn(self.alice_id, remaining_nodes)
+        self.assertIn(self.bob_id, remaining_nodes)
 
 
 if __name__ == "__main__":

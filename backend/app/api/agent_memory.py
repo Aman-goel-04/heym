@@ -340,19 +340,9 @@ async def delete_memory_edge(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory edge not found")
 
-    canvas_key = row.canvas_node_id
-    wf_id = row.workflow_id
-    endpoint_ids = frozenset({row.source_node_id, row.target_node_id})
+    # No pruning here: Undo re-creates the edge by looking up its endpoints by
+    # entity name, so a manual delete must never also remove a now-isolated
+    # endpoint, or Undo gets a 400 ("Source or target entity not found").
     await db.execute(delete(AgentMemoryEdge).where(AgentMemoryEdge.id == memory_edge_id))
     await db.flush()
-
-    def _after_edge_delete(sync_sess: Session) -> None:
-        # Scoped to exactly this edge's two endpoints: if removing it leaves either one
-        # with no other edges, both are deleted here (deliberately - a node that reads as
-        # a bare floating entity once its one connection is gone is swept the same as any
-        # other orphan). A caller relying on Undo re-creating just the edge needs to also
-        # re-create any endpoint this removed; it cannot assume the node survives.
-        prune_isolated_nodes_sync(sync_sess, wf_id, canvas_key, candidate_node_ids=endpoint_ids)
-
-    await db.run_sync(_after_edge_delete)
     return {"status": "deleted"}
