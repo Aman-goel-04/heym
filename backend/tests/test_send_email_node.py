@@ -21,13 +21,16 @@ def _make_workflow(email_data: dict) -> tuple[list, list]:
     return nodes, edges
 
 
-def _make_db_mock(file_rows_by_first: list) -> MagicMock:
+def _make_db_mock(file_rows_by_first: list, shared_rows_by_first: list | None = None) -> MagicMock:
     """Fake sync SessionLocal context manager. `file_rows_by_first` are returned
     in order from successive `.query(...).filter(...).first()` calls."""
     fake_db = MagicMock()
     fake_db.__enter__ = MagicMock(return_value=fake_db)
     fake_db.__exit__ = MagicMock(return_value=False)
     fake_db.query.return_value.filter.return_value.first.side_effect = list(file_rows_by_first)
+    fake_db.query.return_value.join.return_value.join.return_value.filter.return_value.first.side_effect = (
+        list(shared_rows_by_first) if shared_rows_by_first is not None else [None] * 10
+    )
     return fake_db
 
 
@@ -76,9 +79,8 @@ def _run_send_email(
         ),
         patch("smtplib.SMTP", return_value=smtp_cm),
         patch("smtplib.SMTP_SSL", return_value=smtp_cm),
-        patch("app.services.file_storage._storage_root") as mock_root,
+        patch("app.services.file_storage.get_file_path", return_value=mock_path),
     ):
-        mock_root.return_value.__truediv__ = MagicMock(return_value=mock_path)
         result = executor.execute(
             workflow_id=uuid.uuid4(),
             initial_inputs={"headers": {}, "query": {}, "body": {"text": "hi"}},
@@ -170,6 +172,35 @@ class SendEmailAttachmentTests(unittest.TestCase):
         _, msg = _sent_message(server)
         filenames = [p.get_filename() for p in msg.walk() if p.get_filename()]
         self.assertIn("report.pdf", filenames)
+
+    def test_team_shared_drive_file_attached(self) -> None:
+        owner = uuid.uuid4()
+        other_user = uuid.uuid4()
+        file_id = uuid.uuid4()
+        shared_file_row = SimpleNamespace(
+            id=file_id,
+            owner_id=other_user,
+            filename="team_shared_report.pdf",
+            mime_type="application/pdf",
+            storage_path=f"{other_user}/{file_id}/team_shared_report.pdf",
+        )
+        nr, server = _run_send_email(
+            {
+                "label": "sendEmail",
+                "credentialId": str(uuid.uuid4()),
+                "to": "a@x.com",
+                "subject": "Hi",
+                "emailBody": "Body text",
+                "attachments": str(file_id),
+            },
+            owner,
+            _make_db_mock([None], [shared_file_row]),
+        )
+        self.assertEqual(nr["status"], "success")
+        self.assertEqual(nr["output"]["attachment_count"], 1)
+        _, msg = _sent_message(server)
+        filenames = [p.get_filename() for p in msg.walk() if p.get_filename()]
+        self.assertIn("team_shared_report.pdf", filenames)
 
     def test_invalid_attachment_uuid_errors(self) -> None:
         owner = uuid.uuid4()

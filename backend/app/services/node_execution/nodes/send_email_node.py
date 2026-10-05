@@ -16,10 +16,9 @@ def execute(ctx: NodeExecutionContext) -> object:
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    from app.db.models import GeneratedFile
     from app.db.session import SessionLocal
     from app.services.encryption import decrypt_config
-    from app.services.file_storage import _storage_root
+    from app.services.file_storage import load_readable_file_sync
 
     to_template = node_data.get("to", "")
     cc_template = node_data.get("cc", "")
@@ -115,24 +114,12 @@ def execute(ctx: NodeExecutionContext) -> object:
                     file_uuid = _uuid.UUID(token)
                 except ValueError as exc:
                     raise ValueError(f"Send Email: invalid attachment file ID '{token}'") from exc
-                file_row = (
-                    db.query(GeneratedFile)
-                    .filter(
-                        GeneratedFile.id == file_uuid,
-                        GeneratedFile.owner_id == owner_id,
-                    )
-                    .first()
+                file_row, file_bytes = load_readable_file_sync(
+                    db,
+                    file_id=file_uuid,
+                    owner_id=owner_id,
+                    context="Send Email: attachment",
                 )
-                if not file_row:
-                    raise ValueError(
-                        f"Send Email: attachment file not found or access denied: {file_uuid}"
-                    )
-                disk_path = _storage_root() / file_row.storage_path
-                if not disk_path.exists():
-                    raise ValueError(
-                        f"Send Email: attachment file missing on disk: {file_row.filename}"
-                    )
-                file_bytes = disk_path.read_bytes()
                 mime_type = file_row.mime_type or "application/octet-stream"
                 _, _, subtype = mime_type.partition("/")
                 part = MIMEApplication(file_bytes, _subtype=subtype or "octet-stream")

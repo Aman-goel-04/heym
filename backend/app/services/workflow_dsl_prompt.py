@@ -1742,7 +1742,7 @@ Notes:
   - `bcc`: (optional) Blind carbon-copy recipient(s) (supports expressions, comma-separated); hidden from other recipients
   - `subject`: Email subject line (supports expressions)
   - `emailBody`: Email body content (supports expressions)
-  - `attachments`: (optional) Comma-separated Drive file IDs to attach (supports expressions). Reference an upstream `drive` node's `id` output, e.g. `$drive.id`. Only files owned by the workflow owner can be attached.
+  - `attachments`: (optional) Comma-separated Drive file IDs to attach (supports expressions). Reference an upstream `drive` node's `id` output, e.g. `$drive.id`. Only files owned by the workflow owner or shared with one of their teams can be attached.
 
 **SETUP**: Requires an SMTP credential with server, port, email, and password configured. Common SMTP servers:
 - Gmail: `smtp.gmail.com`, port `587` (requires App Password)
