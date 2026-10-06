@@ -1,5 +1,6 @@
 """Global variables API - CRUD for user-scoped persistent variables."""
 
+import math
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -40,11 +41,32 @@ def _coerce_value(value: object, value_type: str) -> object:
         return str(value)
     if value_type == "number":
         if isinstance(value, str):
+            if not value:
+                return 0
             try:
-                return int(value) if "." not in value else float(value)
-            except ValueError:
-                return float(value) if value else 0
-        return float(value) if isinstance(value, (int, float)) else 0
+                num = int(value) if "." not in value else float(value)
+            except (ValueError, OverflowError):
+                try:
+                    num = float(value)
+                except (ValueError, OverflowError):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Invalid number value",
+                    )
+            if not math.isfinite(num):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Invalid number value",
+                )
+            return num
+        if isinstance(value, (int, float)):
+            if not math.isfinite(value):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Invalid number value",
+                )
+            return float(value)
+        return 0
     if value_type == "boolean":
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes")
