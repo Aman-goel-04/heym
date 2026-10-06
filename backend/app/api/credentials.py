@@ -335,6 +335,16 @@ def merge_credential_config_for_update(
             merged_config["imap_password"] = incoming_password
         return merged_config
 
+    if credential_type == CredentialType.qdrant:
+        merged_config = dict(existing_config)
+        for key in ("qdrant_host", "qdrant_port", "openai_api_key"):
+            if key in incoming_config:
+                merged_config[key] = incoming_config[key]
+        incoming_api_key = str(incoming_config.get("qdrant_api_key", "") or "").strip()
+        if incoming_api_key:
+            merged_config["qdrant_api_key"] = incoming_api_key
+        return merged_config
+
     if credential_type != CredentialType.github:
         return incoming_config
 
