@@ -38,6 +38,7 @@ lifetimes) that override these code defaults when you copy it.
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | Access-token lifetime in minutes. | `1440` |
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | Refresh-token lifetime in days. | `30` |
 | `ALLOW_REGISTER` | Allow new user self-registration. Set `false` to lock down production, but only after your admin account exists: registration is refused for everyone when this is off and there is no first-user bootstrap, so an empty database plus `false` leaves no way to create an account. | `true` |
+| `HEYM_ADMIN_EMAILS` | Comma-separated email addresses of instance administrators, matched case-insensitively. Administrators manage instance settings (**Settings → SSO**, **Settings → Instances**, the Heym Work integration), can open, edit, and delete any user's workflows, see every owner's schedules and execution history, and pause or resume a workflow's automatic triggers. They also keep password sign-in when it is disabled for SSO, so a misconfigured provider cannot lock the instance. Empty grants nobody this access. Restart the backend after changing it. Plugin installation uses the separate `HEYM_PLUGIN_ADMIN_EMAILS`. | — |
 | `TRUST_PROXY_HEADERS` | Trust `X-Forwarded-*` headers (enable only behind a trusted proxy). | `false` |
 
 ## OAuth (MCP / API clients)
