@@ -115,6 +115,7 @@ from app.services.hitl_service import (
     persist_pending_hitl_execution,
 )
 from app.services.html_response import build_html_response, find_sole_html_terminal
+from app.services.instance_admin import is_instance_admin
 from app.services.pending_execution import needs_local_pending_persist
 from app.services.pending_review_cancel import cancel_pending_review_execution
 from app.services.workflow_access import (
@@ -141,7 +142,14 @@ from app.services.workflow_last_trigger import (
     fetch_last_trigger_source,
     fetch_last_trigger_sources,
 )
-from app.services.workflow_status import compute_trigger_status, refine_manual_status
+from app.services.workflow_lifecycle import (
+    has_unfinished_workflow_executions,
+    set_automatic_triggers_paused,
+)
+from app.services.workflow_status import (
+    compute_trigger_status,
+    refine_manual_status,
+)
 from app.services.workflow_version import calculate_workflow_diff
 
 _SENSITIVE_HEADERS: frozenset[str] = frozenset(
@@ -895,6 +903,14 @@ async def list_workflows(
 
     last_trigger_sources = await fetch_last_trigger_sources(db, [w.id for w in workflows])
 
+    admin = is_instance_admin(current_user)
+    owner_emails: dict[uuid.UUID, str] = {}
+    if admin and workflows:
+        owners = await db.execute(
+            select(User.id, User.email).where(User.id.in_({w.owner_id for w in workflows}))
+        )
+        owner_emails = dict(owners.all())
+
     response_list = []
     for w in workflows:
         if w.owner_id == current_user.id:
@@ -914,7 +930,8 @@ async def list_workflows(
             trigger_status=refine_manual_status(
                 compute_trigger_status(w.nodes, w.edges), last_trigger_sources.get(w.id)
             ),
-            scheduled_for_deletion=scheduled_for_deletion,
+            scheduled_for_deletion=w.scheduled_for_deletion if admin else scheduled_for_deletion,
+            owner_email=owner_emails.get(w.owner_id),
             created_at=w.created_at,
             updated_at=w.updated_at,
         )
@@ -1921,6 +1938,55 @@ async def update_workflow(
     return _build_workflow_response(workflow, current_user.id)
 
 
+async def _set_workflow_triggers_paused(
+    workflow_id: uuid.UUID,
+    paused: bool,
+    current_user: User,
+    db: AsyncSession,
+) -> WorkflowResponse:
+    if not is_instance_admin(current_user):
+        raise HTTPException(status_code=403, detail="Instance administrator access required")
+    workflow = await get_workflow_for_user(db, workflow_id, current_user.id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    nodes = set_automatic_triggers_paused(workflow.nodes or [], paused=paused)
+    response = await update_workflow(
+        workflow_id,
+        WorkflowUpdate(nodes=nodes, base_updated_at=workflow.updated_at),
+        current_user,
+        db,
+    )
+    audit(
+        action="workflow.pause_triggers" if paused else "workflow.resume_triggers",
+        actor=current_user,
+        target_type="workflow",
+        target_id=workflow.id,
+        target_name=workflow.name,
+        owner_id=str(workflow.owner_id),
+    )
+    return response
+
+
+@router.post("/{workflow_id}/pause-triggers", response_model=WorkflowResponse)
+async def pause_workflow_triggers(
+    workflow_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowResponse:
+    """Disable automatic triggers while allowing already-started runs to finish."""
+    return await _set_workflow_triggers_paused(workflow_id, True, current_user, db)
+
+
+@router.post("/{workflow_id}/resume-triggers", response_model=WorkflowResponse)
+async def resume_workflow_triggers(
+    workflow_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowResponse:
+    """Resume automatic triggers disabled by an administrator."""
+    return await _set_workflow_triggers_paused(workflow_id, False, current_user, db)
+
+
 @router.delete("/{workflow_id}/cache", status_code=status.HTTP_204_NO_CONTENT)
 async def clear_workflow_response_cache(
     workflow_id: uuid.UUID,
@@ -1953,7 +2019,7 @@ async def delete_workflow(
             detail="Workflow not found",
         )
 
-    if workflow.owner_id != current_user.id:
+    if workflow.owner_id != current_user.id and not is_instance_admin(current_user):
         audit(
             action="workflow.delete",
             outcome=OUTCOME_DENIED,
@@ -1965,7 +2031,14 @@ async def delete_workflow(
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the owner can delete this workflow",
+            detail="Only the owner or an instance administrator can delete this workflow",
+        )
+
+    if await has_unfinished_workflow_executions(db, workflow_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This workflow has unfinished runs. Pause its triggers, then wait for runs "
+            "to finish before deleting it.",
         )
 
     audit(
@@ -1975,6 +2048,8 @@ async def delete_workflow(
         target_id=workflow.id,
         target_name=workflow.name,
         kind=getattr(workflow, "kind", "workflow"),
+        owner_id=str(workflow.owner_id),
+        admin_override=workflow.owner_id != current_user.id,
     )
 
     # Capture the identity before the row goes away; the event reports a workflow
@@ -2004,11 +2079,10 @@ async def delete_workflow(
         {"workflow_id": str(workflow_id)},
     )
     await db.delete(workflow)
+    await db.commit()
 
-    # The event is written from its own session, so it lands before this request's
-    # transaction commits at teardown. A rollback after this point would leave an
-    # event for a workflow that still exists - a narrow window we accept, because
-    # the alternative is letting a failed publish roll back a successful delete.
+    # Publish only after deletion is durable, so both event consumers and the
+    # caller observe the same result as soon as this endpoint returns.
     if deleted_kind == "workflow":
         await publish_event(
             name=EVENT_WORKFLOW_DELETED,
@@ -2035,16 +2109,25 @@ async def schedule_workflow_for_deletion(
             detail="Workflow not found",
         )
 
-    if workflow.owner_id != current_user.id:
+    if workflow.owner_id != current_user.id and not is_instance_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the owner can schedule this workflow for deletion",
+            detail="Only the owner or an instance administrator can schedule this workflow for deletion",
         )
 
     workflow.scheduled_for_deletion = datetime.now(timezone.utc)
     workflow.folder_id = None
     await db.flush()
     await db.refresh(workflow)
+
+    audit(
+        action="workflow.schedule_deletion",
+        actor=current_user,
+        target_type="workflow",
+        target_id=workflow.id,
+        target_name=workflow.name,
+        owner_id=str(workflow.owner_id),
+    )
 
     return WorkflowListResponse(
         id=workflow.id,
@@ -2076,15 +2159,24 @@ async def unschedule_workflow_for_deletion(
             detail="Workflow not found",
         )
 
-    if workflow.owner_id != current_user.id:
+    if workflow.owner_id != current_user.id and not is_instance_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the owner can unschedule this workflow for deletion",
+            detail="Only the owner or an instance administrator can unschedule this workflow for deletion",
         )
 
     workflow.scheduled_for_deletion = None
     await db.flush()
     await db.refresh(workflow)
+
+    audit(
+        action="workflow.unschedule_deletion",
+        actor=current_user,
+        target_type="workflow",
+        target_id=workflow.id,
+        target_name=workflow.name,
+        owner_id=str(workflow.owner_id),
+    )
 
     return WorkflowListResponse(
         id=workflow.id,
@@ -4490,6 +4582,15 @@ async def cancel_workflow_execution(
     if await cancel_pending_review_execution(
         db, workflow_id=workflow_id, execution_id=execution_id
     ):
+        audit(
+            action="workflow.cancel_execution",
+            actor=current_user,
+            target_type="workflow",
+            target_id=workflow.id,
+            target_name=workflow.name,
+            execution_id=str(execution_id),
+            owner_id=str(workflow.owner_id),
+        )
         return {"status": "cancel_requested"}
 
     cancelled_local = cancel_active_execution(workflow_id=workflow_id, execution_id=execution_id)
@@ -4504,6 +4605,15 @@ async def cancel_workflow_execution(
             detail="Execution not found or already finished",
         )
 
+    audit(
+        action="workflow.cancel_execution",
+        actor=current_user,
+        target_type="workflow",
+        target_id=workflow.id,
+        target_name=workflow.name,
+        execution_id=str(execution_id),
+        owner_id=str(workflow.owner_id),
+    )
     return {"status": "cancel_requested"}
 
 

@@ -18,3 +18,10 @@ from app.config import settings
 def cluster_disabled_unless_a_test_asks_for_it():
     with patch.object(settings, "cluster_enabled", False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def instance_admins_empty_unless_a_test_configures_them():
+    """Never grant permissions or change query paths from a developer's .env."""
+    with patch.object(settings, "admin_emails", ""):
+        yield

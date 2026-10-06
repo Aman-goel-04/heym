@@ -20,6 +20,8 @@ Each block displays:
 
 ## Navigation
 
+Instance administrators listed in `HEYM_ADMIN_EMAILS` see every owner's schedules when **Show all workflows** is checked. Uncheck it to see only their own workflows. Other users retain the **Show shared with me** option. To retire an employee's automation, use the [instance administration controls](./workflows-tab.md#instance-administration) on the Workflows preview to pause or resume triggers.
+
 - Use the **previous / next** arrows to move across days, weeks, or months
 - The **Today** button returns to the current date instantly
 

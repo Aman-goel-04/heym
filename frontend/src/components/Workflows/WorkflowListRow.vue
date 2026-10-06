@@ -168,6 +168,13 @@ function handleRowKeydown(event: KeyboardEvent): void {
       >
         {{ workflow.description }}
       </p>
+      <p
+        v-if="workflow.owner_email"
+        class="truncate text-[11px] text-muted-foreground"
+        :title="workflow.owner_email"
+      >
+        {{ workflow.owner_email }}
+      </p>
       <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span
           :class="cn('text-muted-foreground/80', compact ? 'text-[10px]' : 'text-[11px]')"

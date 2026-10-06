@@ -4,13 +4,20 @@ import datetime
 import unittest
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from fastapi import HTTPException
 
 from app.api.workflows import (
     _build_workflow_response,
     _build_workflow_version_response,
     _sanitize_headers,
     _webhook_secret_names,
+    get_workflow,
+    update_workflow,
 )
+from app.config import settings
+from app.models.schemas import WorkflowUpdate
 
 
 def _workflow(*, owner_id: uuid.UUID, header_key: str | None, header_value: str | None):
@@ -112,6 +119,40 @@ class WorkflowResponseMaskingTests(unittest.TestCase):
         workflow = _workflow(owner_id=owner_id, header_key=None, header_value=None)
 
         self.assertFalse(_build_workflow_response(workflow, owner_id).auth_header_value_set)
+
+
+class AdminWorkflowSecretTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_write_access_still_masks_owner_secret(self) -> None:
+        admin = SimpleNamespace(id=uuid.uuid4(), email="admin@example.com")
+        workflow = _workflow(owner_id=uuid.uuid4(), header_key="X-Key", header_value="s3cr3t")
+        db = AsyncMock()
+        db.execute.side_effect = [
+            MagicMock(scalar_one_or_none=lambda: workflow),
+            MagicMock(scalar=lambda: True),
+            MagicMock(scalar_one_or_none=lambda: None),
+            MagicMock(scalar_one_or_none=lambda: "Owner"),
+        ]
+        with patch.object(settings, "admin_emails", admin.email):
+            response = await get_workflow(workflow.id, admin, db)
+        self.assertEqual(response.permission, "write")
+        self.assertIsNone(response.auth_header_value)
+        self.assertTrue(response.auth_header_value_set)
+
+    async def test_admin_cannot_overwrite_owner_authentication(self) -> None:
+        admin = SimpleNamespace(id=uuid.uuid4(), email="admin@example.com")
+        workflow = _workflow(owner_id=uuid.uuid4(), header_key="X-Key", header_value="s3cr3t")
+        db = AsyncMock()
+        db.execute.side_effect = [
+            MagicMock(scalar_one_or_none=lambda: workflow),
+            MagicMock(scalar=lambda: True),
+        ]
+        with patch.object(settings, "admin_emails", admin.email):
+            with self.assertRaises(HTTPException) as raised:
+                await update_workflow(workflow.id, WorkflowUpdate(auth_type="anonymous"), admin, db)
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(workflow.auth_type, "header_auth")
+        self.assertEqual(workflow.auth_header_value, "s3cr3t")
+        db.commit.assert_not_awaited()
 
 
 class WorkflowVersionMaskingTests(unittest.TestCase):

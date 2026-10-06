@@ -398,6 +398,7 @@ class WorkflowListResponse(BaseModel):
     trigger_status: str = "manual"
     scheduled_for_deletion: datetime | None = None
     shared_by_team: str | None = None
+    owner_email: str | None = None
     created_at: datetime
     updated_at: datetime
 

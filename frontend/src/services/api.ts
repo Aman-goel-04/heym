@@ -618,6 +618,16 @@ export const workflowApi = {
     await api.delete(`/workflows/${id}/cache`);
   },
 
+  pauseTriggers: async (id: string): Promise<Workflow> => {
+    const response = await api.post<Workflow>(`/workflows/${id}/pause-triggers`);
+    return noteWorkflowRevision(response.data);
+  },
+
+  resumeTriggers: async (id: string): Promise<Workflow> => {
+    const response = await api.post<Workflow>(`/workflows/${id}/resume-triggers`);
+    return noteWorkflowRevision(response.data);
+  },
+
   delete: async (id: string): Promise<void> => {
     await api.delete(`/workflows/${id}`);
   },

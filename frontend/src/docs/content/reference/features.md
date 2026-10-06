@@ -501,6 +501,8 @@ See also [AI Assistant](./ai-assistant.md), [Contextual Showcase](./contextual-s
 
 ### [Workflow Organization](./workflow-organization.md)
 
+Instance administrators (`HEYM_ADMIN_EMAILS`) can access and edit every workflow, find an owner's workflows by email, inspect schedules and execution history, pause and resume automatic triggers, and delete workflows once runs settle. See [Instance Administration](../tabs/workflows-tab.md#instance-administration) for the offboarding flow and the distinction between pausing automatic triggers and blocking all calls.
+
 Workflows can be organized in folders and sub-folders in a tree structure. Folders have names and optional parent; workflows are assigned to folders. Workflows can be scheduled for deletion (moved to a trash area before permanent removal). The API supports create, update, delete, and moving workflows between folders, and the same organization model appears in the [Workflows](../tabs/workflows-tab.md) tab.
 
 See also [Quick Drawer](./quick-drawer.md), [Download & Import](./download-import.md), and [Edit History](./edit-history.md).

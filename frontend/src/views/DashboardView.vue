@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import JSZip from "jszip";
+import axios from "axios";
 import { useRoute, useRouter } from "vue-router";
 import { useMediaQuery } from "@vueuse/core";
 import {
@@ -406,7 +407,7 @@ function matchesWorkflowSearch(workflow: WorkflowListItem, normalizedQuery: stri
     return true;
   }
 
-  return `${workflow.name} ${workflow.description ?? ""}`.toLowerCase().includes(normalizedQuery);
+  return `${workflow.name} ${workflow.description ?? ""} ${workflow.owner_email ?? ""}`.toLowerCase().includes(normalizedQuery);
 }
 
 /** Prunes folders with no visible workflow so a filter never leaves empty shells behind. */
@@ -482,7 +483,12 @@ const {
   lastRun: selectedWorkflowLastRun,
   loading: previewLoading,
   error: previewError,
+  reload: reloadWorkflowPreview,
 } = useWorkflowPreview(selectedWorkflowId);
+
+async function refreshAdminWorkflow(): Promise<void> {
+  await Promise.all([loadWorkflows(), reloadWorkflowPreview()]);
+}
 
 const isSelectedWorkflowRunning = computed((): boolean => {
   return selectedWorkflowId.value !== null && runningWorkflowIds.value.has(selectedWorkflowId.value);
@@ -894,9 +900,9 @@ async function deleteWorkflow(id: string, event: Event): Promise<void> {
     syncSelectionWithWorkflows();
     await folderStore.fetchFolderTree();
     showToast("Workflow deleted successfully", "success");
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("403")) {
-      showToast("Only the owner can delete this workflow");
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && typeof error.response?.data?.detail === "string") {
+      showToast(error.response.data.detail, "error");
     } else if (error instanceof Error) {
       showToast(error.message);
     }
@@ -2207,6 +2213,7 @@ async function restoreFromTrash(workflowId: string, event: Event): Promise<void>
                   @run="runWorkflowInQuickDrawer"
                   @open-history="openExecutionHistory"
                   @open-step="openSelectedWorkflowFromStep"
+                  @changed="refreshAdminWorkflow"
                 />
               </aside>
             </div>
@@ -2618,6 +2625,7 @@ async function restoreFromTrash(workflowId: string, event: Event): Promise<void>
                 @run="runWorkflowInQuickDrawer"
                 @open-history="openExecutionHistory"
                 @open-step="openSelectedWorkflowFromStep"
+                @changed="refreshAdminWorkflow"
               />
             </div>
           </div>

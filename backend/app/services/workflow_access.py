@@ -42,11 +42,15 @@ def explicit_workflow_share_ids(user_id: UUID):
 def workflow_access_clause(user_id: UUID) -> ColumnElement[bool]:
     """Return the WHERE clause matching every workflow ``user_id`` can reach.
 
-    A user reaches a workflow by owning it, by holding a direct share, or by
-    belonging to a team the workflow is shared with. A dashboard widget's hidden
+    Instance administrators reach every workflow. Other users reach a workflow by
+    owning it, holding a direct share, or belonging to a team it is shared with.
+    A dashboard widget's hidden
     workflow is also reachable with write access to its dashboard; read access
     to a dashboard never reaches a workflow.
     """
+    # Heym Work imports these access helpers without loading Heym's settings.
+    from app.services.instance_admin import instance_admin_clause
+
     return or_(
         Workflow.owner_id == user_id,
         Workflow.id.in_(explicit_workflow_share_ids(user_id)),
@@ -61,6 +65,7 @@ def workflow_access_clause(user_id: UUID) -> ColumnElement[bool]:
             Workflow.kind == "dashboard_widget",
             Workflow.id.in_(writable_shared_widget_workflow_ids(user_id)),
         ),
+        instance_admin_clause(user_id),
     )
 
 
@@ -69,7 +74,7 @@ async def get_accessible_workflow(
     workflow_id: UUID,
     user_id: UUID,
 ) -> Workflow | None:
-    """Return a workflow the user owns or that has been shared with them."""
+    """Return a workflow reached through ownership, sharing, or instance administration."""
     result = await db.execute(
         select(Workflow).where(
             Workflow.id == workflow_id,
@@ -106,12 +111,18 @@ async def get_workflow_permission(
 ) -> str | None:
     """Return the highest permission ``user_id`` holds on ``workflow``.
 
-    The owner and anyone with write access to a dashboard that hosts the workflow as a widget
-    get ``"write"``. Otherwise the highest permission across the user's direct share and every
+    Instance administrators, the owner, and anyone with write access to a dashboard
+    hosting the workflow as a widget get ``"write"``. Otherwise the highest permission
+    across the user's direct share and every
     team share wins, so a write grant through one path is never weakened by a read grant
     through another. ``None`` means the user has no access at all.
     """
+    from app.services.instance_admin import is_instance_admin_id
+
     if workflow.owner_id == user_id:
+        return PERMISSION_WRITE
+
+    if await is_instance_admin_id(db, user_id):
         return PERMISSION_WRITE
 
     permissions: list[str] = []
