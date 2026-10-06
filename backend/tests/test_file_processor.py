@@ -32,10 +32,8 @@ class CleanPdfTextTests(unittest.TestCase):
         self.assertEqual(FileProcessor()._clean_pdf_text(""), "")
 
     def test_single_letter_runs_collapse(self) -> None:
-        # Verified against the real function's output, not the docstring's own
-        # (stale) example - see heymrun/heym discussion #688.
         result = FileProcessor()._clean_pdf_text("m m m i i ss ss i i oo nn")
-        self.assertEqual(result, "mision")
+        self.assertEqual(result, "mission")
 
     def test_normal_text_is_not_mangled(self) -> None:
         text = "The quick brown fox jumps over the lazy dog."
@@ -43,6 +41,16 @@ class CleanPdfTextTests(unittest.TestCase):
 
     def test_spaced_out_word_is_rejoined(self) -> None:
         self.assertEqual(FileProcessor()._clean_pdf_text("J o i n t"), "Joint")
+
+    def test_overlapping_digraph_chain_is_rejoined(self) -> None:
+        result = FileProcessor()._clean_pdf_text("m mo ov ve em me en nt t")
+        self.assertEqual(result, "movement")
+
+    def test_fake_bold_doubled_letter_pairs_collapse(self) -> None:
+        # Faux-bold rendering shape: each letter doubled as a 2-char token,
+        # including the genuine double "s" in "mission".
+        result = FileProcessor()._clean_pdf_text("mm ii ss ss ii oo nn")
+        self.assertEqual(result, "mission")
 
 
 class ChunkTextTests(unittest.TestCase):

@@ -66,7 +66,7 @@ class FileProcessor:
         cleaned = " ".join(result)
 
         while True:
-            new_cleaned = re.sub(r"([a-zA-Z])\s+\1(\s|$)", r"\1\1\2", cleaned)
+            new_cleaned = re.sub(r"(?<!\S)([a-zA-Z])\s+\1(\s|$)", r"\1\1\2", cleaned)
             if new_cleaned == cleaned:
                 break
             cleaned = new_cleaned
@@ -80,25 +80,36 @@ class FileProcessor:
             part = cleaned_parts[i]
             if len(part) == 1 and part.isalpha():
                 word_chars = [part]
+                last_char = part
+                paired = False
                 j = i + 1
                 while j < len(cleaned_parts):
                     next_part = cleaned_parts[j]
                     if len(next_part) == 1 and next_part.isalpha():
+                        if paired and next_part == last_char:
+                            # The overlapping-pair chain already absorbed this
+                            # letter once (e.g. "nt" contributed the final "t");
+                            # a trailing standalone copy of it is extraction
+                            # noise, not a genuine repeat, so the run ends here.
+                            j += 1
+                            break
                         word_chars.append(next_part)
+                        last_char = next_part
                         j += 1
                     elif (
                         len(next_part) == 2
                         and next_part[0] == next_part[1]
                         and next_part[0].isalpha()
                     ):
-                        word_chars.append(next_part[0])
+                        word_chars.append(next_part)
+                        last_char = next_part[0]
                         j += 1
                     elif (
-                        len(next_part) == 2
-                        and next_part[0] == word_chars[-1]
-                        and next_part[0].isalpha()
+                        len(next_part) == 2 and next_part[0] == last_char and next_part[0].isalpha()
                     ):
                         word_chars.append(next_part[1])
+                        last_char = next_part[1]
+                        paired = True
                         j += 1
                     else:
                         break
@@ -107,26 +118,33 @@ class FileProcessor:
                     i = j
                     continue
             elif len(part) == 2 and part[0] == part[1] and part[0].isalpha():
-                word_chars = [part[0]]
+                word_chars = [part]
+                last_char = part[0]
+                paired = False
                 j = i + 1
                 while j < len(cleaned_parts):
                     next_part = cleaned_parts[j]
                     if len(next_part) == 1 and next_part.isalpha():
+                        if paired and next_part == last_char:
+                            j += 1
+                            break
                         word_chars.append(next_part)
+                        last_char = next_part
                         j += 1
                     elif (
                         len(next_part) == 2
                         and next_part[0] == next_part[1]
                         and next_part[0].isalpha()
                     ):
-                        word_chars.append(next_part[0])
+                        word_chars.append(next_part)
+                        last_char = next_part[0]
                         j += 1
                     elif (
-                        len(next_part) == 2
-                        and next_part[0] == word_chars[-1]
-                        and next_part[0].isalpha()
+                        len(next_part) == 2 and next_part[0] == last_char and next_part[0].isalpha()
                     ):
                         word_chars.append(next_part[1])
+                        last_char = next_part[1]
+                        paired = True
                         j += 1
                     else:
                         break
