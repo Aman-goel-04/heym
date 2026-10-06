@@ -337,12 +337,13 @@ def merge_credential_config_for_update(
 
     if credential_type == CredentialType.qdrant:
         merged_config = dict(existing_config)
-        for key in ("qdrant_host", "qdrant_port", "openai_api_key"):
+        for key in ("qdrant_host", "qdrant_port"):
             if key in incoming_config:
                 merged_config[key] = incoming_config[key]
-        incoming_api_key = str(incoming_config.get("qdrant_api_key", "") or "").strip()
-        if incoming_api_key:
-            merged_config["qdrant_api_key"] = incoming_api_key
+        for key in ("qdrant_api_key", "openai_api_key"):
+            incoming_value = str(incoming_config.get(key, "") or "").strip()
+            if incoming_value:
+                merged_config[key] = incoming_value
         return merged_config
 
     if credential_type != CredentialType.github:
@@ -570,6 +571,11 @@ def get_public_credential_fields(
                 as_bool(config.get("embedding_request_dimensions"))
             ).lower(),
             "db_type": str(config.get("db_type", "qdrant")).strip() or "qdrant",
+            "qdrant_host": str(config.get("qdrant_host", "") or "").strip() or None,
+            "qdrant_port": str(config.get("qdrant_port") or 6333),
+        }
+    if credential_type == CredentialType.qdrant:
+        return {
             "qdrant_host": str(config.get("qdrant_host", "") or "").strip() or None,
             "qdrant_port": str(config.get("qdrant_port") or 6333),
         }

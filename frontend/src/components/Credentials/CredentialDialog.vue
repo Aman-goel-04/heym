@@ -559,8 +559,14 @@ watch(
           props.credential.type === "clickhouse"
             ? (props.credential.public_fields?.secure ?? "true") === "true"
             : true;
-        qdrantHost.value = "";
-        qdrantPort.value = "6333";
+        qdrantHost.value =
+          props.credential.type === "qdrant"
+            ? props.credential.public_fields?.qdrant_host ?? ""
+            : "";
+        qdrantPort.value =
+          props.credential.type === "qdrant"
+            ? props.credential.public_fields?.qdrant_port ?? "6333"
+            : "6333";
         qdrantApiKey.value = "";
         qdrantOpenaiApiKey.value = "";
         pgvectorOpenaiApiKey.value = "";
