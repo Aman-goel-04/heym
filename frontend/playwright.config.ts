@@ -62,6 +62,7 @@ export default defineConfig({
         "TIMEZONE=UTC",
         "TZ=UTC",
         "ALLOW_REGISTER=true",
+        "HEYM_ADMIN_EMAILS=instance-admin@heym.example.com",
         "PLAYWRIGHT_INSTALL_AT_STARTUP=false",
         "HEYM_PYTHON_TOOL_SANDBOX=subprocess",
         "HEYM_LLM_PRICING_SYNC_ENABLED=false",

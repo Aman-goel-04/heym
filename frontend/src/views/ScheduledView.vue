@@ -4,6 +4,7 @@ import { onMounted, ref, watch } from "vue";
 import { ChevronLeft, ChevronRight } from "lucide-vue-next";
 
 import CalendarGrid from "@/components/Calendar/CalendarGrid.vue";
+import { useAuthStore } from "@/stores/auth";
 import { getScheduleEvents } from "@/services/schedules";
 import type { CalendarView, ScheduleEvent } from "@/types/schedule";
 
@@ -12,6 +13,7 @@ const currentDate = ref<Date>(new Date());
 const events = ref<ScheduleEvent[]>([]);
 const loading = ref(false);
 const includeShared = ref(true);
+const authStore = useAuthStore();
 
 function getViewLabel(): string {
   const d = currentDate.value;
@@ -117,7 +119,7 @@ onMounted(fetchEvents);
             type="checkbox"
             class="rounded border-border accent-violet-600 w-3.5 h-3.5 cursor-pointer"
           >
-          Show shared with me
+          {{ authStore.user?.is_admin ? "Show all workflows" : "Show shared with me" }}
         </label>
         <div class="flex items-center gap-1 border border-border rounded-md p-0.5 text-sm">
           <button

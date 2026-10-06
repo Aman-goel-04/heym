@@ -114,7 +114,11 @@ class CancelWorkflowExecutionEndpointTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "app.api.workflows.get_workflow_for_user",
-                AsyncMock(return_value=SimpleNamespace(id=workflow_id)),
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        id=workflow_id, owner_id=uuid.uuid4(), name="Review workflow"
+                    )
+                ),
             ),
             patch(
                 "app.api.workflows.cancel_pending_review_execution",

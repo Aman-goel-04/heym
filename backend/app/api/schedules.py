@@ -10,8 +10,9 @@ from app.api.deps import get_current_user
 from app.db.models import TeamMember, User, Workflow, WorkflowTeamShare
 from app.db.session import get_db
 from app.models.schemas import ScheduleEvent, ScheduleListResponse
+from app.services.instance_admin import is_instance_admin
 from app.services.timezone_utils import get_configured_timezone
-from app.services.workflow_access import explicit_workflow_share_ids
+from app.services.workflow_access import explicit_workflow_share_ids, workflow_access_clause
 
 router = APIRouter()
 
@@ -61,6 +62,8 @@ async def _get_schedule_events(
 
 
 def _workflows_where_clause(current_user: User, include_shared: bool) -> Any:
+    if include_shared and is_instance_admin(current_user):
+        return workflow_access_clause(current_user.id)
     if include_shared:
         return or_(
             Workflow.owner_id == current_user.id,

@@ -17,6 +17,7 @@ import {
 
 import type { AllExecutionHistoryEntryLight, Workflow, WorkflowListItem } from "@/types/workflow";
 import Button from "@/components/ui/Button.vue";
+import WorkflowAdminControls from "@/components/Workflows/WorkflowAdminControls.vue";
 import { isTileFillingIcon, nodeIcons } from "@/lib/nodeIcons";
 import { cn, formatDate } from "@/lib/utils";
 import { orderWorkflowSteps, summarizeTrigger } from "@/lib/workflowPreview";
@@ -43,6 +44,7 @@ const emit = defineEmits<{
   run: [id: string];
   openHistory: [id: string];
   openStep: [nodeId: string];
+  changed: [];
 }>();
 
 const iconComponent = computed(() => {
@@ -81,6 +83,11 @@ const metaTooltip = computed((): string => {
 });
 
 const trigger = computed(() => (props.detail ? summarizeTrigger(props.detail) : null));
+
+const hasCron = computed((): boolean =>
+  !!props.detail && props.detail.id === props.summary?.id
+    && props.detail.nodes.some((node) => node.type === "cron"),
+);
 
 const steps = computed(() =>
   props.detail ? orderWorkflowSteps(props.detail.nodes, props.detail.edges) : [],
@@ -194,6 +201,12 @@ onUnmounted(() => {
       </div>
 
       <div class="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+        <WorkflowAdminControls
+          :key="summary.id"
+          :workflow="summary"
+          :has-cron="hasCron"
+          @changed="emit('changed')"
+        />
         <div
           v-if="error"
           class="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-xs text-destructive"

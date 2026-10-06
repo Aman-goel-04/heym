@@ -75,6 +75,7 @@ export interface WorkflowListItem {
   first_node_type: NodeType | null;
   trigger_status: WorkflowTriggerStatus;
   scheduled_for_deletion: string | null;
+  owner_email?: string | null;
   created_at: string;
   updated_at: string;
 }
