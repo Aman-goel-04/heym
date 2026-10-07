@@ -43,6 +43,23 @@ class CleanPdfTextTests(unittest.TestCase):
         result = FileProcessor()._clean_pdf_text("mm ii ss ss ii oo nn")
         self.assertEqual(result, "mission")
 
+    def test_per_glyph_faux_bold_single_char_runs_collapse(self) -> None:
+        # Each letter double-struck as its own text object (no real bold font,
+        # so the generator re-strokes every glyph) extracts as a run of
+        # repeated single-character tokens, not the 2-character tokens above -
+        # a double letter like "ss" in "mission" becomes four "s" tokens, not
+        # two "ss" tokens.
+        result = FileProcessor()._clean_pdf_text("m m i i s s s s i i o o n n")
+        self.assertEqual(result, "mission")
+
+    def test_non_letter_single_char_runs_still_collapse_to_one(self) -> None:
+        # The run-halving rule above is scoped to letters only. Digit and
+        # punctuation runs (spaced tables, dashed rules, bullet rows) must
+        # keep today's behavior unchanged, not get halved too.
+        self.assertEqual(FileProcessor()._clean_pdf_text("- - - - - -"), "-")
+        self.assertEqual(FileProcessor()._clean_pdf_text("* * * *"), "*")
+        self.assertEqual(FileProcessor()._clean_pdf_text("0 0 0 0"), "0")
+
     def test_trailing_single_letter_word_is_kept_separate(self) -> None:
         self.assertEqual(FileProcessor()._clean_pdf_text("data a"), "data a")
 

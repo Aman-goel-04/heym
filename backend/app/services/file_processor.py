@@ -46,9 +46,19 @@ class FileProcessor:
 
             if len(part) == 1:
                 j = i + 1
+                count = 1
                 while j < len(parts) and parts[j] == part:
+                    count += 1
                     j += 1
-                result.append(part)
+                # An even run of the same LETTER is the same shape a single
+                # faux-bold-struck letter produces (each real occurrence struck
+                # exactly twice), just scaled up for a genuine doubled letter -
+                # halve, don't collapse to one. Scoped to letters only: digits
+                # and punctuation runs (spaced tables, dashed rules, bullet
+                # rows) keep today's collapse-to-one behavior unchanged.
+                repeat = count // 2 if part.isalpha() and count % 2 == 0 else 1
+                for _ in range(repeat):
+                    result.append(part)
                 i = j
             elif len(part) == 2 and part[0] == part[1]:
                 j = i + 1
