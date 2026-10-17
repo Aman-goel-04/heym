@@ -298,7 +298,7 @@ Pairs with [Loop](../nodes/loop-node.md), [Drive](../nodes/drive-node.md), [LLM]
 
 #### [GitHub](../nodes/github-node.md)
 
-The GitHub node provides 40 native GitHub REST actions covering repositories, organizations and users, issues, pull requests, reviews, releases, Actions workflows, traffic insights, and repository files. Use it for issue triage, review automation, workflow dispatch and completion waits, release automation, and repo file updates without hand-building HTTP requests. It supports GitHub.com and optional GitHub Enterprise `base_url` on the credential.
+The GitHub node provides 40 native GitHub REST actions covering repositories, organizations and users, issues, pull requests, reviews, releases, Actions workflows, traffic insights, and repository files. Use it for issue triage, review automation, workflow dispatch and completion waits, release automation, and repo file updates without hand-building HTTP requests. List operations return one page plus `has_more` and `next_cursor`, so a workflow can walk past the first page by feeding the cursor back in. It supports GitHub.com and optional GitHub Enterprise `base_url` on the credential.
 
 Pairs with [Agent Node](../nodes/agent-node.md), [HTTP](../nodes/http-node.md), [Set](../nodes/set-node.md), and [Third-Party Integrations](./integrations.md).
 
