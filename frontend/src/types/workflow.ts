@@ -763,6 +763,7 @@ export interface NodeData {
   githubBranch?: string;
   githubPerPage?: string;
   githubCursor?: string;
+  githubReturnAll?: boolean;
   githubTagName?: string;
   githubReleaseId?: string;
   githubWorkflowId?: string;

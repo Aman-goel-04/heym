@@ -457,6 +457,28 @@ const {
           <code>next_cursor</code> while <code>has_more</code> is true.
         </p>
       </div>
+      <div class="space-y-1">
+        <div class="flex items-center justify-between gap-2">
+          <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              id="github-return-all"
+              type="checkbox"
+              :checked="selectedNode.data.githubReturnAll === true"
+              class="rounded border-border"
+              @change="updateNodeData('githubReturnAll', ($event.target as HTMLInputElement).checked)"
+            >
+            <span>Return all pages</span>
+          </label>
+          <AgentFieldToggle
+            :node-id="selectedNode.id"
+            field-key="githubReturnAll"
+          />
+        </div>
+        <p class="text-xs text-muted-foreground">
+          Follows every page, starting at Cursor, and stops at about 1,000 items. If more
+          remain, <code>has_more</code> is true and <code>next_cursor</code> picks up from there.
+        </p>
+      </div>
     </template>
 
     <template v-if="selectedNode.data.githubOperation === 'createIssue' || selectedNode.data.githubOperation === 'updateIssue' || selectedNode.data.githubOperation === 'createPullRequest' || selectedNode.data.githubOperation === 'createRelease' || selectedNode.data.githubOperation === 'updateRelease'">
