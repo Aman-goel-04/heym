@@ -707,6 +707,7 @@ export function usePropertiesPanelController() {
   const githubMentionedExpressionInputRef = ref<ExpandableFieldRef | null>(null);
   const githubLabelsFilterExpressionInputRef = ref<ExpandableFieldRef | null>(null);
   const githubSinceExpressionInputRef = ref<ExpandableFieldRef | null>(null);
+  const githubCursorExpressionInputRef = ref<ExpandableFieldRef | null>(null);
   const githubTitleExpressionInputRef = ref<ExpandableFieldRef | null>(null);
   const githubBodyExpressionInputRef = ref<ExpandableFieldRef | null>(null);
   const githubCommentBodyExpressionInputRef = ref<ExpandableFieldRef | null>(null);
@@ -4993,6 +4994,8 @@ export function usePropertiesPanelController() {
         return githubLabelsFilterExpressionInputRef.value;
       case "githubSince":
         return githubSinceExpressionInputRef.value;
+      case "githubCursor":
+        return githubCursorExpressionInputRef.value;
       case "githubTitle":
         return githubTitleExpressionInputRef.value;
       case "githubBody":
@@ -5076,6 +5079,7 @@ export function usePropertiesPanelController() {
     githubMentionedExpressionInputRef.value?.closeExpandDialog();
     githubLabelsFilterExpressionInputRef.value?.closeExpandDialog();
     githubSinceExpressionInputRef.value?.closeExpandDialog();
+    githubCursorExpressionInputRef.value?.closeExpandDialog();
     githubTitleExpressionInputRef.value?.closeExpandDialog();
     githubBodyExpressionInputRef.value?.closeExpandDialog();
     githubCommentBodyExpressionInputRef.value?.closeExpandDialog();
@@ -6582,6 +6586,11 @@ export function usePropertiesPanelController() {
   }
 
   function usesGitHubPerPage(operation: string | undefined): boolean {
+    return githubPerPageOperations.has(operation || "");
+  }
+
+  /** Every paged list operation takes a continuation cursor next to Per Page. */
+  function usesGitHubCursor(operation: string | undefined): boolean {
     return githubPerPageOperations.has(operation || "");
   }
 
@@ -9379,6 +9388,7 @@ export function usePropertiesPanelController() {
     githubMentionedExpressionInputRef,
     githubLabelsFilterExpressionInputRef,
     githubSinceExpressionInputRef,
+    githubCursorExpressionInputRef,
     githubTitleExpressionInputRef,
     githubBodyExpressionInputRef,
     githubCommentBodyExpressionInputRef,
@@ -9700,6 +9710,7 @@ export function usePropertiesPanelController() {
     isGitHubRepoRequired,
     isGitHubOwnerRequired,
     usesGitHubPerPage,
+    usesGitHubCursor,
     googleDriveCredentialOptions,
     googleDriveOperationOptions,
     googleDriveExportFormatOptions,

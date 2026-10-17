@@ -4683,6 +4683,9 @@ Use ONLY: `str()`, `int()`, `float()`, `bool()`, `list()`, `dict(key=value)`, `l
   - `githubOwner`: Repository owner, organization, or username when required
   - `githubRepo`: Repository name when required
   - `githubPerPage`: Optional page size from 1 to 100 for list operations
+  - `githubCursor`: Optional expression-capable continuation cursor for list operations. Leave
+    empty for the first page; pass the previous run's `next_cursor` to fetch the next one.
+    List operations also return `has_more` and `next_cursor`
 - **Operation-specific fields**:
   - Issues: `githubIssueNumber`, `githubTitle`, `githubBody`, `githubState`,
     `githubStateReason`, `githubLabels`, `githubAssignees`, `githubAssignee`,
